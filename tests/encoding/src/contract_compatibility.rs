@@ -16,7 +16,10 @@ use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{Address, BytesN, Env, Symbol, TryFromVal, Val};
 
-use earnproof_shared::UpgradeCompatibilityAttestation;
+use earnproof_shared::{
+    compute_schema_policy_digest, SchemaLifecyclePolicy, SchemaPolicy, SchemaRateLimit,
+    UpgradeCompatibilityAttestation, SCHEMA_POLICY_DIGEST_VERSION,
+};
 use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
 use proof_registry::{ProofRegistryContract, ProofRegistryContractClient};
 use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
@@ -38,6 +41,42 @@ fn vector_hex(id: &str) -> &'static str {
         }
     }
     panic!("no fixture vector named {id} in vectors.tsv");
+}
+
+#[test]
+fn schema_policy_digest_matches_the_documented_canonical_xdr_tuple() {
+    let env = Env::default();
+    let lifecycle = SchemaLifecyclePolicy {
+        activated_at: 100,
+        deprecated_at: 0,
+    };
+    let policy = SchemaPolicy {
+        proof_types: soroban_sdk::vec![&env, 1_u32, 2_u32],
+        max_validity_seconds: 5_000,
+    };
+    let rate = SchemaRateLimit {
+        max_registrations: 25,
+        window_ledgers: 100,
+    };
+    let expected_payload = (
+        SCHEMA_POLICY_DIGEST_VERSION,
+        Symbol::new(&env, "earnproof_schema_policy"),
+        7_u32,
+        9_u32,
+        true,
+        100_u64,
+        0_u64,
+        policy.proof_types.clone(),
+        5_000_u64,
+        2_048_u32,
+        25_u32,
+        100_u32,
+    )
+        .to_xdr(&env);
+    assert_eq!(
+        compute_schema_policy_digest(&env, 7, 9, true, &lifecycle, &policy, 2_048, &rate),
+        env.crypto().sha256(&expected_payload).to_bytes()
+    );
 }
 
 fn bytes_from_hex(env: &Env, hex: &str) -> BytesN<32> {

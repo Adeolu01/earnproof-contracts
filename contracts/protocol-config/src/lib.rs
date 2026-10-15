@@ -3,12 +3,13 @@
 use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
     CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
-    SchemaPolicy, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
+    SchemaLifecyclePolicy, SchemaPolicy, SchemaPolicyDigest, SchemaRateLimit,
     CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
-    MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
+    DEFAULT_SCHEMA_RATE_LIMIT, DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS, LEGACY_COMMITMENT_ALGORITHM,
+    LEGACY_PROOF_TYPE, MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
     MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
-    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
-    SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION, SHA256_COMMITMENT_ALGORITHM_V1,
+    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol,
@@ -28,6 +29,8 @@ enum DataKey {
     SchemaVersion(u32),
     SchemaPredecessor(u32),
     SchemaPolicy(u32),
+    SchemaLifecycle(u32),
+    SchemaRateLimit(u32),
     CommitmentAlgorithm(u32),
     ProofTypeApproved(BytesN<32>),
     PendingAdmin,
@@ -157,6 +160,13 @@ pub struct ContractDecommissioned {
 pub struct SchemaPayloadLimitSet {
     pub version: u32,
     pub max_size: u32,
+}
+
+#[contractevent]
+pub struct SchemaRateLimitSet {
+    pub version: u32,
+    pub max_registrations: u32,
+    pub window_ledgers: u32,
 }
 
 #[contractevent]
@@ -563,7 +573,9 @@ impl ProtocolConfigContract {
 
         let existing = Self::stored_predecessor(env.clone(), version);
         if existing.is_some_and(|stored| stored != predecessor)
-            || (existing.is_none() && predecessor != 0 && Self::schema_version_exists(env.clone(), version))
+            || (existing.is_none()
+                && predecessor != 0
+                && Self::schema_version_exists(env.clone(), version))
         {
             return Err(ContractError::InvalidState);
         }
@@ -577,13 +589,16 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion(version), &true);
+        Self::record_schema_approval(&env, version);
         Self::extend_schema_ttl(env.clone(), version);
         if predecessor != 0 {
             let key = DataKey::SchemaPredecessor(version);
             env.storage().persistent().set(&key, &predecessor);
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
             SchemaPredecessorSet {
                 version,
                 predecessor,
@@ -629,6 +644,7 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion(version), &true);
+        Self::record_schema_approval(&env, version);
         Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
         Self::append_config_history(
@@ -649,6 +665,7 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion(version), &false);
+        Self::record_schema_deprecation(&env, version);
         Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
         Self::append_config_history(
@@ -687,7 +704,10 @@ impl ProtocolConfigContract {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_nonzero_version(version)?;
-        if env.storage().persistent().has(&DataKey::SchemaVersion(version))
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::SchemaVersion(version))
             || proof_types.is_empty()
             || proof_types.len() > MAX_SCHEMA_PROOF_TYPES
             || max_validity_seconds == 0
@@ -979,6 +999,7 @@ impl ProtocolConfigContract {
                 env.storage()
                     .persistent()
                     .set(&DataKey::SchemaVersion(version), &true);
+                Self::record_schema_approval(&env, version);
                 Self::extend_schema_ttl(env.clone(), version);
                 Self::record_critical_action_change(
                     env.clone(),
@@ -992,6 +1013,7 @@ impl ProtocolConfigContract {
                 env.storage()
                     .persistent()
                     .set(&DataKey::SchemaVersion(version), &false);
+                Self::record_schema_deprecation(&env, version);
                 Self::extend_schema_ttl(env.clone(), version);
                 Self::record_critical_action_change(
                     env.clone(),
@@ -1063,6 +1085,122 @@ impl ProtocolConfigContract {
     /// stale cursor is clamped forward, deterministically, instead of
     /// panicking. `limit` is capped at `MAX_CONFIG_HISTORY_PAGE` regardless of
     /// the requested value.
+    /// Admin-only: set the deterministic registration-rate policy included in
+    /// the schema digest. A zero maximum pauses registrations for the schema;
+    /// the ledger window itself must be nonzero.
+    pub fn set_schema_rate_limit(
+        env: Env,
+        version: u32,
+        max_registrations: u32,
+        window_ledgers: u32,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_nonzero_version(version)?;
+        if window_ledgers == 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        let rate_limit = SchemaRateLimit {
+            max_registrations,
+            window_ledgers,
+        };
+        let key = DataKey::SchemaRateLimit(version);
+        env.storage().persistent().set(&key, &rate_limit);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaRateLimit,
+            Self::commit(&env, (version, rate_limit.clone())),
+        );
+        SchemaRateLimitSet {
+            version,
+            max_registrations,
+            window_ledgers,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn get_schema_rate_limit(env: Env, version: u32) -> SchemaRateLimit {
+        if version == 0 {
+            return Self::default_schema_rate_limit();
+        }
+        let key = DataKey::SchemaRateLimit(version);
+        let policy = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(Self::default_schema_rate_limit);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        policy
+    }
+
+    pub fn get_schema_lifecycle(env: Env, version: u32) -> SchemaLifecyclePolicy {
+        let key = DataKey::SchemaLifecycle(version);
+        let lifecycle = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(SchemaLifecyclePolicy {
+                activated_at: 0,
+                deprecated_at: 0,
+            });
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        lifecycle
+    }
+
+    pub fn get_schema_policy_digest(
+        env: Env,
+        version: u32,
+    ) -> Result<SchemaPolicyDigest, ContractError> {
+        Self::ensure_nonzero_version(version)?;
+        if !Self::schema_version_exists(env.clone(), version) {
+            return Err(ContractError::NotFound);
+        }
+        let approved = Self::is_schema_version_approved(env.clone(), version);
+        let lifecycle = Self::get_schema_lifecycle(env.clone(), version);
+        let policy = Self::get_schema_policy(env.clone(), version);
+        let payload_limit = Self::get_schema_payload_limit(env.clone(), version);
+        let rate_limit = Self::get_schema_rate_limit(env.clone(), version);
+        let config_version = Self::get_config_version(env.clone());
+        let digest = earnproof_shared::compute_schema_policy_digest(
+            &env,
+            version,
+            config_version,
+            approved,
+            &lifecycle,
+            &policy,
+            payload_limit,
+            &rate_limit,
+        );
+        Ok(SchemaPolicyDigest {
+            digest_version: earnproof_shared::SCHEMA_POLICY_DIGEST_VERSION,
+            config_version,
+            schema_version: version,
+            digest,
+        })
+    }
+
+    pub fn get_schema_policy_digest_version() -> u32 {
+        earnproof_shared::SCHEMA_POLICY_DIGEST_VERSION
+    }
+
     pub fn get_config_history(env: Env, cursor: u32, limit: u32) -> Vec<ConfigChangeSummary> {
         let total = Self::get_config_history_cursor(env.clone());
         let oldest_available = total.saturating_sub(CONFIG_HISTORY_CAPACITY);
@@ -1236,6 +1374,42 @@ impl ProtocolConfigContract {
         Ok(())
     }
 
+    fn default_schema_rate_limit() -> SchemaRateLimit {
+        SchemaRateLimit {
+            max_registrations: DEFAULT_SCHEMA_RATE_LIMIT,
+            window_ledgers: DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS,
+        }
+    }
+
+    fn record_schema_approval(env: &Env, version: u32) {
+        let key = DataKey::SchemaLifecycle(version);
+        let lifecycle = SchemaLifecyclePolicy {
+            activated_at: env.ledger().timestamp(),
+            deprecated_at: 0,
+        };
+        env.storage().persistent().set(&key, &lifecycle);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    }
+
+    fn record_schema_deprecation(env: &Env, version: u32) {
+        let key = DataKey::SchemaLifecycle(version);
+        let mut lifecycle = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(SchemaLifecyclePolicy {
+                activated_at: 0,
+                deprecated_at: 0,
+            });
+        lifecycle.deprecated_at = env.ledger().timestamp();
+        env.storage().persistent().set(&key, &lifecycle);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    }
+
     fn require_valid_principal(address: &Address) -> Result<(), ContractError> {
         if !earnproof_shared::is_valid_principal_address(address) {
             return Err(ContractError::InvalidInput);
@@ -1401,15 +1575,21 @@ impl ProtocolConfigContract {
         let key = DataKey::SchemaPredecessor(version);
         let predecessor = env.storage().persistent().get(&key);
         if predecessor.is_some() {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
         }
         predecessor
     }
 
     fn schema_version_exists(env: Env, version: u32) -> bool {
-        version != 0 && env.storage().persistent().has(&DataKey::SchemaVersion(version))
+        version != 0
+            && env
+                .storage()
+                .persistent()
+                .has(&DataKey::SchemaVersion(version))
     }
 
     fn lineage_reaches(env: Env, start: u32, target: u32) -> bool {
@@ -1548,8 +1728,9 @@ mod test {
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
-        ConfigChangeCategory, ContractError, CriticalAction, CriticalActionPolicy,
-        CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, TTL_THRESHOLD_LEDGERS,
+        ConfigChangeCategory, ContractError, CriticalAction, CriticalActionPolicy, SchemaRateLimit,
+        CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, SCHEMA_POLICY_DIGEST_VERSION,
+        TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
         testutils::{storage::Persistent as _, Address as _, Ledger as _},
@@ -1617,6 +1798,69 @@ mod test {
 
         client.deprecate_schema_version(&1);
         assert!(!client.is_schema_version_approved(&1));
+    }
+
+    #[test]
+    fn schema_policy_digest_is_deterministic_and_covers_every_policy_field() {
+        let (env, client, _admin) = setup();
+        env.ledger().set_timestamp(100);
+        client.set_schema_policy(&7, &soroban_sdk::vec![&env, 1_u32, 2_u32], &5_000);
+        client.set_schema_payload_limit(&7, &2_048);
+        client.set_schema_rate_limit(&7, &25, &100);
+        client.approve_schema_version(&7);
+
+        let initial = client.get_schema_policy_digest(&7);
+        assert_eq!(initial.digest_version, SCHEMA_POLICY_DIGEST_VERSION);
+        assert_eq!(initial.schema_version, 7);
+        assert_eq!(initial, client.get_schema_policy_digest(&7));
+        assert_eq!(client.get_schema_lifecycle(&7).activated_at, 100);
+        assert_eq!(
+            client.get_schema_rate_limit(&7),
+            SchemaRateLimit {
+                max_registrations: 25,
+                window_ledgers: 100,
+            }
+        );
+
+        client.set_schema_payload_limit(&7, &2_049);
+        let payload_changed = client.get_schema_policy_digest(&7);
+        assert_ne!(initial.digest, payload_changed.digest);
+        assert!(payload_changed.config_version > initial.config_version);
+
+        client.set_schema_rate_limit(&7, &26, &100);
+        let rate_changed = client.get_schema_policy_digest(&7);
+        assert_ne!(payload_changed.digest, rate_changed.digest);
+
+        env.ledger().set_timestamp(200);
+        client.deprecate_schema_version(&7);
+        let deprecated = client.get_schema_policy_digest(&7);
+        assert_ne!(rate_changed.digest, deprecated.digest);
+        assert_eq!(client.get_schema_lifecycle(&7).deprecated_at, 200);
+
+        env.ledger().set_timestamp(300);
+        client.approve_schema_version(&7);
+        let reactivated = client.get_schema_policy_digest(&7);
+        assert_ne!(deprecated.digest, reactivated.digest);
+        assert_eq!(client.get_schema_lifecycle(&7).activated_at, 300);
+        assert_eq!(client.get_schema_lifecycle(&7).deprecated_at, 0);
+    }
+
+    #[test]
+    fn schema_rate_limit_rejects_invalid_or_unauthorized_updates_atomically() {
+        let (env, client, _admin) = setup();
+        let before = client.get_config_version();
+        assert_eq!(
+            client.try_set_schema_rate_limit(&1, &10, &0),
+            Err(Ok(ContractError::InvalidInput))
+        );
+        assert_eq!(client.get_config_version(), before);
+
+        env.set_auths(&[]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.set_schema_rate_limit(&1, &10, &100);
+        }));
+        assert!(result.is_err());
+        assert_eq!(client.get_config_version(), before);
     }
 
     #[test]
