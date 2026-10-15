@@ -302,6 +302,16 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "TooManySuccessors",
             ProofError::TooManySuccessors as u32,
         ),
+        (
+            "ProofError",
+            "DisputeFilingWindowClosed",
+            ProofError::DisputeFilingWindowClosed as u32,
+        ),
+        (
+            "ProofError",
+            "UnsupportedNullifierDomain",
+            ProofError::UnsupportedNullifierDomain as u32,
+        ),
     ]
 }
 

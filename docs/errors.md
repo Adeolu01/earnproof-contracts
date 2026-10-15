@@ -138,6 +138,8 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 322 | `CrossIssuerSupersession` | `ProofError` | proof-registry | returned | never | 403 |
 | 323 | `PredecessorNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 324 | `TooManySuccessors` | `ProofError` | proof-registry | returned | never | 400 |
+| 325 | `DisputeFilingWindowClosed` | `ProofError` | proof-registry | returned | never | 400 |
+| 326 | `UnsupportedNullifierDomain` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 
 ## Details
 ### 1 - `AlreadyInitialized`
@@ -788,5 +790,27 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: A predecessor can only have a bounded number of successors.
 - Suggested HTTP status: 400
 - Client message: "Too many successors"
+
+### 325 - `DisputeFilingWindowClosed`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: The governed dispute filing window has not opened, has closed, or its lifecycle anchor is unavailable.
+- Remediation: Read `get_dispute_filing_eligibility` before filing and do not replay a request outside its reported half-open window.
+- Suggested HTTP status: 400
+- Client message: "Dispute filing window is closed"
+
+### 326 - `UnsupportedNullifierDomain`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-operator-action
+- Cause: The proof supplied a subject-nullifier domain version that protocol governance does not support.
+- Remediation: Query `get_nullifier_domain_versions` and submit a nullifier derived under a currently supported version.
+- Suggested HTTP status: 400
+- Client message: "Unsupported nullifier domain version"
 
 <!-- END GENERATED -->
