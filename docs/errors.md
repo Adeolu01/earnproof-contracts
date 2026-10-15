@@ -88,6 +88,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 60 | `InvalidInput` | `ContractError` | common | returned | after-caller-change | 400 |
 | 61 | `InvalidAddress` | `ContractError` | common | returned | after-caller-change | 400 |
 | 62 | `IncompatibleInterfaceVersion` | `ContractError` | common | returned | after-caller-change | 400 |
+| 63 | `AdminNominationExpired` | `ContractError` | common | returned | after-operator-action | 409 |
 | 64 | `BatchTooLarge` | `ContractError` | common | returned | after-caller-change | 400 |
 | 80 | `ProtocolPaused` | `ContractError` | common | reserved | after-operator-action | 503 |
 | 90 | `NoUpgradeApproval` | `ContractError` | common | returned | after-operator-action | 403 |
@@ -238,6 +239,17 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Bind a dependency whose interface version is compatible: same major and at least the minor and patch the consumer requires. Read the accepted version from the consumer before retrying.
 - Suggested HTTP status: 400
 - Client message: "Incompatible dependency version"
+
+### 63 - `AdminNominationExpired`
+
+- Enum: `ContractError`
+- Domain: common
+- Status: returned
+- Retry: after-operator-action
+- Cause: An administrator transfer was accepted at or after its exclusive expiry ledger, or a legacy nomination has no expiry metadata.
+- Remediation: Have the current administrator create a fresh nomination, then accept it before the reported expiry ledger.
+- Suggested HTTP status: 409
+- Client message: "Administrator nomination has expired"
 
 ### 64 - `BatchTooLarge`
 

@@ -43,6 +43,9 @@ pub const UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
 /// Stale approvals expire and must be re-approved.
 /// ~30 days at 5s/ledger = 518_400 ledgers
 pub const UPGRADE_APPROVAL_EXPIRY_LEDGERS: u32 = 518_400;
+/// Maximum lifetime of an administrator transfer nomination. A nomination is
+/// valid in `[nominated_at_ledger, expires_at_ledger)`.
+pub const ADMIN_TRANSFER_EXPIRY_LEDGERS: u32 = 120_960;
 /// Maximum number of distinct signers in a critical-action approval policy.
 pub const MAX_CRITICAL_ACTION_SIGNERS: u32 = 16;
 /// Maximum lifetime of a critical-action proposal, in ledgers.
@@ -373,10 +376,29 @@ impl InterfaceVersion {
 }
 
 /// The interface version implemented by `issuer-registry`.
-pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
 
 /// The interface version implemented by `protocol-config`.
-pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
+pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 2, 0);
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AdminTransferState {
+    Absent,
+    Pending,
+    Expired,
+}
+
+/// Query result shared by every contract that supports two-step admin transfer.
+/// Zero ledger values identify a legacy nomination without expiry sidecars.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferStatus {
+    pub state: AdminTransferState,
+    pub pending_admin: Option<Address>,
+    pub nominated_at_ledger: u32,
+    pub expires_at_ledger: u32,
+}
 
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -499,6 +521,9 @@ pub enum ContractError {
     // Input validation errors (60-79)
     InvalidInput = 60,
     InvalidAddress = 61,
+    /// A nominated administrator attempted acceptance at or after the
+    /// nomination's exclusive expiry ledger.
+    AdminNominationExpired = 63,
     /// A bounded batch query supplied more items than its documented maximum.
     BatchTooLarge = 64,
     /// A cross-contract dependency reported an interface version outside the

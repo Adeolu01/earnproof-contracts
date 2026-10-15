@@ -1,14 +1,15 @@
 #![no_std]
 
 use earnproof_shared::{
-    ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
-    CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
-    SchemaPolicy, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
+    AdminTransferState, AdminTransferStatus, ConfigChangeCategory, ConfigChangeSummary,
+    ContractError, CriticalAction, CriticalActionPolicy, CriticalActionProposal, GenesisRecord,
+    InterfaceVersion, MigrationStatus, PauseScope, SchemaPolicy, ADMIN_TRANSFER_EXPIRY_LEDGERS,
     CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
-    MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
-    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
-    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
-    SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE, MAX_CONFIG_HISTORY_PAGE,
+    MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH, MAX_SCHEMA_LINEAGE_DEPTH,
+    MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS, MIGRATION_STATUS_VERSION,
+    PROTOCOL_CONFIG_INTERFACE_VERSION, SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol,
@@ -31,6 +32,8 @@ enum DataKey {
     CommitmentAlgorithm(u32),
     ProofTypeApproved(BytesN<32>),
     PendingAdmin,
+    PendingAdminNominatedAt,
+    PendingAdminExpiresAt,
     /// Allowlist entry: maps a WASM hash to the target contract version it
     /// must install.  Only hashes pre-approved by the admin may be applied.
     AllowedWasm(BytesN<32>),
@@ -69,6 +72,13 @@ pub struct AdminTransferAccepted {
 pub struct AdminTransferCancelled {
     pub pending_admin: Address,
     pub cancelled_by: Address,
+}
+
+#[contractevent]
+pub struct AdminTransferExpired {
+    pub pending_admin: Address,
+    pub expired_at_ledger: u32,
+    pub cleaned_at_ledger: u32,
 }
 
 // ── existing events ─────────────────────────────────────────────────────────
@@ -285,9 +295,19 @@ impl ProtocolConfigContract {
         Self::require_valid_principal(&new_admin)?;
         Self::require_auth(&admin);
 
+        let nominated_at = env.ledger().sequence();
+        let expires_at = nominated_at
+            .checked_add(ADMIN_TRANSFER_EXPIRY_LEDGERS)
+            .ok_or(ContractError::InvalidTimingConfig)?;
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdminNominatedAt, &nominated_at);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdminExpiresAt, &expires_at);
         AdminTransferNominated {
             pending_admin: new_admin.clone(),
             nominated_by: admin,
@@ -298,17 +318,17 @@ impl ProtocolConfigContract {
 
     pub fn accept_admin(env: Env) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env)?;
-        let pending_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::PendingAdmin)
-            .ok_or(ContractError::NotFound)?;
+        let status = Self::get_admin_transfer_status(env.clone());
+        if status.state == AdminTransferState::Expired {
+            return Err(ContractError::AdminNominationExpired);
+        }
+        let pending_admin = status.pending_admin.ok_or(ContractError::NotFound)?;
         Self::require_auth(&pending_admin);
 
         env.storage()
             .instance()
             .set(&DataKey::Admin, &pending_admin);
-        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Self::clear_admin_nomination(&env);
 
         Self::bump_config_version(env.clone());
         Self::append_config_history(
@@ -338,7 +358,7 @@ impl ProtocolConfigContract {
             .instance()
             .get(&DataKey::PendingAdmin)
             .ok_or(ContractError::NotFound)?;
-        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Self::clear_admin_nomination(&env);
 
         AdminTransferCancelled {
             pending_admin,
@@ -346,6 +366,69 @@ impl ProtocolConfigContract {
         }
         .publish(&env);
         Ok(())
+    }
+
+    pub fn get_admin_transfer_status(env: Env) -> AdminTransferStatus {
+        let pending_admin: Option<Address> = env.storage().instance().get(&DataKey::PendingAdmin);
+        let Some(pending_admin) = pending_admin else {
+            return AdminTransferStatus {
+                state: AdminTransferState::Absent,
+                pending_admin: None,
+                nominated_at_ledger: 0,
+                expires_at_ledger: 0,
+            };
+        };
+        let nominated_at_ledger = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdminNominatedAt)
+            .unwrap_or(0);
+        let expires_at_ledger = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdminExpiresAt)
+            .unwrap_or(0);
+        let state = if expires_at_ledger == 0 || env.ledger().sequence() >= expires_at_ledger {
+            AdminTransferState::Expired
+        } else {
+            AdminTransferState::Pending
+        };
+        AdminTransferStatus {
+            state,
+            pending_admin: Some(pending_admin),
+            nominated_at_ledger,
+            expires_at_ledger,
+        }
+    }
+
+    /// Permissionless cleanup after the exclusive expiry boundary. Cleanup
+    /// removes nomination state without changing the current administrator.
+    pub fn cleanup_expired_admin_transfer(env: Env) -> Result<(), ContractError> {
+        let status = Self::get_admin_transfer_status(env.clone());
+        match status.state {
+            AdminTransferState::Absent => return Err(ContractError::NotFound),
+            AdminTransferState::Pending => return Err(ContractError::InvalidState),
+            AdminTransferState::Expired => {}
+        }
+        let pending_admin = status.pending_admin.ok_or(ContractError::NotFound)?;
+        Self::clear_admin_nomination(&env);
+        AdminTransferExpired {
+            pending_admin,
+            expired_at_ledger: status.expires_at_ledger,
+            cleaned_at_ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    fn clear_admin_nomination(env: &Env) {
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminNominatedAt);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminExpiresAt);
     }
 
     pub fn is_paused(env: Env) -> bool {
@@ -739,11 +822,9 @@ impl ProtocolConfigContract {
             .get(&key)
             .unwrap_or_else(|| Self::legacy_schema_policy(&env));
         if env.storage().persistent().has(&key) {
-            env.storage().persistent().extend_ttl(
-                &key,
-                TTL_THRESHOLD_LEDGERS,
-                TTL_EXTEND_TO_LEDGERS,
-            );
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
         }
         policy
     }
@@ -1401,9 +1482,11 @@ impl ProtocolConfigContract {
         let key = DataKey::SchemaPredecessor(version);
         let predecessor = env.storage().persistent().get(&key);
         if predecessor.is_some() {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
         }
         predecessor
     }
@@ -1548,7 +1631,8 @@ mod test {
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
-        ConfigChangeCategory, ContractError, CriticalAction, CriticalActionPolicy,
+        AdminTransferState, ConfigChangeCategory, ContractError, CriticalAction,
+        CriticalActionPolicy, ADMIN_TRANSFER_EXPIRY_LEDGERS,
         CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
@@ -1593,6 +1677,50 @@ mod test {
         assert!(!client.is_schema_version_approved(&1));
         // contract version initialized to 1
         assert_eq!(client.get_contract_version(), 1);
+    }
+
+    #[test]
+    fn admin_nomination_expires_at_exact_boundary_and_cleanup_is_terminal() {
+        let (env, client, admin) = setup();
+        env.ledger().set_sequence_number(100);
+        let nominee = Address::from_str(&env, OTHER);
+        client.nominate_admin(&nominee);
+
+        let status = client.get_admin_transfer_status();
+        assert_eq!(status.state, AdminTransferState::Pending);
+        assert_eq!(status.nominated_at_ledger, 100);
+        assert_eq!(
+            status.expires_at_ledger,
+            100 + ADMIN_TRANSFER_EXPIRY_LEDGERS
+        );
+
+        env.ledger()
+            .set_sequence_number(status.expires_at_ledger - 1);
+        assert_eq!(
+            client.get_admin_transfer_status().state,
+            AdminTransferState::Pending
+        );
+        env.ledger().set_sequence_number(status.expires_at_ledger);
+        assert_eq!(
+            client.try_accept_admin(),
+            Err(Ok(ContractError::AdminNominationExpired))
+        );
+        assert_eq!(client.get_admin(), admin);
+        assert_eq!(
+            client.get_admin_transfer_status().state,
+            AdminTransferState::Expired
+        );
+
+        client.cleanup_expired_admin_transfer();
+        assert_eq!(
+            client.get_admin_transfer_status().state,
+            AdminTransferState::Absent
+        );
+        assert_eq!(
+            client.try_cleanup_expired_admin_transfer(),
+            Err(Ok(ContractError::NotFound))
+        );
+        assert_eq!(client.get_admin(), admin);
     }
 
     #[test]
