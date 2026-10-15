@@ -1662,16 +1662,8 @@ impl ProtocolConfigContract {
         if deprecated_version == replacement_version {
             return Err(ContractError::InvalidInput);
         }
-        if env
-            .storage()
-            .persistent()
-            .get::<_, bool>(&DataKey::SchemaVersion(deprecated_version))
-            != Some(true)
-            || env
-                .storage()
-                .persistent()
-                .get::<_, bool>(&DataKey::SchemaVersion(replacement_version))
-                != Some(true)
+        if !Self::is_schema_version_approved(env.clone(), deprecated_version)
+            || !Self::is_schema_version_approved(env.clone(), replacement_version)
         {
             return Err(ContractError::InvalidState);
         }

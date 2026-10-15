@@ -107,3 +107,24 @@ fn replacement_obeys_authorization_and_threshold_governance() {
         SchemaCompatibility::Breaking
     );
 }
+
+#[test]
+fn pending_activation_cannot_be_used_as_a_replacement() {
+    let (env, client, _admin) = setup();
+    env.ledger().set_timestamp(1_000);
+    client.set_min_schema_activation_notice(&100);
+    client.approve_schema_at(&4, &1_100);
+
+    let version_before = client.get_config_version();
+    assert_eq!(
+        client.try_deprecate_schema_to(&1, &4, &SchemaCompatibility::BackwardCompatible),
+        Err(Ok(ContractError::InvalidState))
+    );
+    assert_eq!(client.get_config_version(), version_before);
+    assert!(client.is_schema_version_approved(&1));
+    assert!(client.get_schema_replacement(&1).is_none());
+
+    env.ledger().set_timestamp(1_100);
+    client.deprecate_schema_to(&1, &4, &SchemaCompatibility::BackwardCompatible);
+    assert_eq!(client.get_schema_replacement(&1).unwrap().replacement_version, 4);
+}
