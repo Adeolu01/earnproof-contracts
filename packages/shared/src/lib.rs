@@ -859,12 +859,8 @@ impl CriticalAction {
             Self::SchemaApproval(_) => CriticalActionCategory::SchemaApproval,
             Self::SchemaDeprecation(_) => CriticalActionCategory::SchemaDeprecation,
             Self::SchemaPayloadLimit(_, _) => CriticalActionCategory::SchemaPayloadLimit,
-            Self::IssuerRegistryReplacement(_) => {
-                CriticalActionCategory::IssuerRegistryReplacement
-            }
-            Self::ProtocolConfigReplacement(_) => {
-                CriticalActionCategory::ProtocolConfigReplacement
-            }
+            Self::IssuerRegistryReplacement(_) => CriticalActionCategory::IssuerRegistryReplacement,
+            Self::ProtocolConfigReplacement(_) => CriticalActionCategory::ProtocolConfigReplacement,
             Self::ApprovalPolicyUpdate(_) => CriticalActionCategory::ApprovalPolicyUpdate,
             Self::EmergencyPolicyUpdate(_) => CriticalActionCategory::EmergencyPolicyUpdate,
         }

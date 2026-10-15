@@ -2,13 +2,12 @@
 
 use earnproof_shared::{
     ContractError, GenesisRecord, GovernanceRole, GovernanceRoleAssignment, GovernanceRoleState,
-    InterfaceVersion,
-    IssuerError, IssuerPolicyCommitments, IssuerQueryStatus, IssuerRecord, IssuerStatus,
-    IssuerStatusResult, MigrationStatus, RotationRecord, SigningKeyCommitment, TtlStatus,
-    UpgradeApproval, UpgradeReceipt,
-    ISSUER_REGISTRY_INTERFACE_VERSION, MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH,
-    METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS,
-    TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
+    InterfaceVersion, IssuerError, IssuerPolicyCommitments, IssuerQueryStatus, IssuerRecord,
+    IssuerStatus, IssuerStatusResult, MigrationStatus, RotationRecord, SigningKeyCommitment,
+    TtlStatus, UpgradeApproval, UpgradeReceipt, ISSUER_REGISTRY_INTERFACE_VERSION,
+    MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH, METADATA_REVISION_INITIAL,
+    MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec};
 

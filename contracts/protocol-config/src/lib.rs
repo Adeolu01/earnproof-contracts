@@ -2,17 +2,18 @@
 
 use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
-    CriticalActionProposal, GenesisRecord, GovernanceActionDomain, GovernanceApprovalSnapshot,
-    GovernanceApprovalEligibility, GovernanceApproverSnapshot, GovernanceApproverVersion,
-    EmergencyAction, EmergencyActionProposal, EmergencyFastTrackPolicy, InterfaceVersion,
-    MigrationStatus, PauseScope, SchemaPolicy, EMERGENCY_FAST_TRACK_ENCODING_VERSION,
-    GOVERNANCE_ACTION_HASH_VERSION, GOVERNANCE_APPROVAL_SNAPSHOT_VERSION,
-    GOVERNANCE_APPROVER_SNAPSHOT_VERSION, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
-    CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
-    MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
-    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
-    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
-    SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    CriticalActionProposal, EmergencyAction, EmergencyActionProposal, EmergencyFastTrackPolicy,
+    GenesisRecord, GovernanceActionDomain, GovernanceApprovalEligibility,
+    GovernanceApprovalSnapshot, GovernanceApproverSnapshot, GovernanceApproverVersion,
+    InterfaceVersion, MigrationStatus, PauseScope, SchemaPolicy, CONFIG_HISTORY_CAPACITY,
+    CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
+    EMERGENCY_FAST_TRACK_ENCODING_VERSION, GOVERNANCE_ACTION_HASH_VERSION,
+    GOVERNANCE_APPROVAL_SNAPSHOT_VERSION, GOVERNANCE_APPROVER_SNAPSHOT_VERSION,
+    LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE, MAX_CONFIG_HISTORY_PAGE,
+    MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH, MAX_SCHEMA_LINEAGE_DEPTH,
+    MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS, MIGRATION_STATUS_VERSION,
+    PROTOCOL_CONFIG_INTERFACE_VERSION, SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol,
@@ -608,7 +609,9 @@ impl ProtocolConfigContract {
 
         let existing = Self::stored_predecessor(env.clone(), version);
         if existing.is_some_and(|stored| stored != predecessor)
-            || (existing.is_none() && predecessor != 0 && Self::schema_version_exists(env.clone(), version))
+            || (existing.is_none()
+                && predecessor != 0
+                && Self::schema_version_exists(env.clone(), version))
         {
             return Err(ContractError::InvalidState);
         }
@@ -626,9 +629,11 @@ impl ProtocolConfigContract {
         if predecessor != 0 {
             let key = DataKey::SchemaPredecessor(version);
             env.storage().persistent().set(&key, &predecessor);
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
             SchemaPredecessorSet {
                 version,
                 predecessor,
@@ -732,7 +737,10 @@ impl ProtocolConfigContract {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_nonzero_version(version)?;
-        if env.storage().persistent().has(&DataKey::SchemaVersion(version))
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::SchemaVersion(version))
             || proof_types.is_empty()
             || proof_types.len() > MAX_SCHEMA_PROOF_TYPES
             || max_validity_seconds == 0
@@ -952,13 +960,8 @@ impl ProtocolConfigContract {
             .unwrap_or(0)
             .checked_add(1)
             .ok_or(ContractError::InvalidState)?;
-        let proposal_id = Self::emergency_action_commitment(
-            &env,
-            &action,
-            &reason_commitment,
-            expires_at,
-            nonce,
-        );
+        let proposal_id =
+            Self::emergency_action_commitment(&env, &action, &reason_commitment, expires_at, nonce);
         let max_lifetime_ledgers = policy.max_lifetime_ledgers;
         let proposal = EmergencyActionProposal {
             action,
@@ -1036,10 +1039,7 @@ impl ProtocolConfigContract {
         Ok(())
     }
 
-    pub fn cancel_emergency_action(
-        env: Env,
-        proposal_id: BytesN<32>,
-    ) -> Result<(), ContractError> {
+    pub fn cancel_emergency_action(env: Env, proposal_id: BytesN<32>) -> Result<(), ContractError> {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         let key = DataKey::EmergencyActionProposal(proposal_id.clone());
@@ -1384,7 +1384,8 @@ impl ProtocolConfigContract {
         Self::verify_critical_action_domain(&env, &proposal_id, &proposal)?;
         Self::verify_approval_snapshot(&env, &proposal_id, &proposal)?;
         Self::ensure_proposal_live(&env, &proposal)?;
-        if Self::eligible_approval_count(&env, &proposal_id, &proposal) < proposal.policy.threshold {
+        if Self::eligible_approval_count(&env, &proposal_id, &proposal) < proposal.policy.threshold
+        {
             return Err(ContractError::InsufficientApprovals);
         }
         let commitment = Self::commit(&env, proposal.action.clone());
@@ -1430,7 +1431,11 @@ impl ProtocolConfigContract {
             }
             CriticalAction::ApprovalPolicyUpdate(policy) => {
                 Self::validate_critical_action_policy(&policy)?;
-                Self::store_critical_action_policy_with_commitment(env.clone(), policy, commitment)?;
+                Self::store_critical_action_policy_with_commitment(
+                    env.clone(),
+                    policy,
+                    commitment,
+                )?;
             }
             CriticalAction::EmergencyPolicyUpdate(policy) => {
                 Self::validate_emergency_policy(&env, &policy)?;
@@ -1829,15 +1834,21 @@ impl ProtocolConfigContract {
         let key = DataKey::SchemaPredecessor(version);
         let predecessor = env.storage().persistent().get(&key);
         if predecessor.is_some() {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
         }
         predecessor
     }
 
     fn schema_version_exists(env: Env, version: u32) -> bool {
-        version != 0 && env.storage().persistent().has(&DataKey::SchemaVersion(version))
+        version != 0
+            && env
+                .storage()
+                .persistent()
+                .has(&DataKey::SchemaVersion(version))
     }
 
     fn lineage_reaches(env: Env, start: u32, target: u32) -> bool {
@@ -2094,10 +2105,8 @@ impl ProtocolConfigContract {
         else {
             return Ok(());
         };
-        let signer_set_digest = earnproof_shared::governance_signer_set_digest(
-            env,
-            &proposal.policy.signers,
-        );
+        let signer_set_digest =
+            earnproof_shared::governance_signer_set_digest(env, &proposal.policy.signers);
         if snapshot.snapshot_version != GOVERNANCE_APPROVAL_SNAPSHOT_VERSION
             || snapshot.policy_version == 0
             || snapshot.threshold != proposal.policy.threshold
@@ -2248,9 +2257,9 @@ mod test {
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
-        ConfigChangeCategory, ContractError, CriticalAction, CriticalActionPolicy,
+        ConfigChangeCategory, ContractError, CriticalAction, CriticalActionPolicy, EmergencyAction,
+        EmergencyFastTrackPolicy, GovernanceApprovalEligibility, PauseScope,
         CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, GOVERNANCE_ACTION_HASH_VERSION,
-        EmergencyAction, EmergencyFastTrackPolicy, GovernanceApprovalEligibility, PauseScope,
         TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
@@ -3401,9 +3410,8 @@ mod test {
             client.try_set_emergency_policy(&replacement),
             Err(Ok(ContractError::ThresholdApprovalRequired))
         );
-        let proposal_id = client.propose_critical_action(
-            &CriticalAction::EmergencyPolicyUpdate(replacement.clone()),
-        );
+        let proposal_id = client
+            .propose_critical_action(&CriticalAction::EmergencyPolicyUpdate(replacement.clone()));
         client.approve_critical_action(&proposal_id, &signers.get(0).unwrap());
         client.execute_critical_action(&proposal_id);
         assert_eq!(client.get_emergency_policy(), replacement);
@@ -3415,9 +3423,8 @@ mod test {
         let (normal, signers) = enabled_policy(&env, 2);
         client.set_critical_action_policy(&normal);
         let (not_stronger, _) = emergency_policy(&env, 2);
-        let proposal_id = client.propose_critical_action(
-            &CriticalAction::EmergencyPolicyUpdate(not_stronger),
-        );
+        let proposal_id =
+            client.propose_critical_action(&CriticalAction::EmergencyPolicyUpdate(not_stronger));
         client.approve_critical_action(&proposal_id, &signers.get(0).unwrap());
         client.approve_critical_action(&proposal_id, &signers.get(1).unwrap());
         assert_eq!(
@@ -3533,10 +3540,9 @@ mod test {
         let mut domain = client.get_critical_action_domain(&proposal_id).unwrap();
         domain.encoding_version = GOVERNANCE_ACTION_HASH_VERSION + 1;
         env.as_contract(&client.address, || {
-            env.storage().persistent().set(
-                &DataKey::CriticalActionDomain(proposal_id.clone()),
-                &domain,
-            );
+            env.storage()
+                .persistent()
+                .set(&DataKey::CriticalActionDomain(proposal_id.clone()), &domain);
         });
 
         assert_eq!(
@@ -3662,7 +3668,11 @@ mod test {
             threshold: 1,
             signers: Vec::from_array(
                 &env,
-                [signers.get(1).unwrap(), signers.get(2).unwrap(), newcomer.clone()],
+                [
+                    signers.get(1).unwrap(),
+                    signers.get(2).unwrap(),
+                    newcomer.clone(),
+                ],
             ),
         };
         let change =
