@@ -5,7 +5,7 @@ mod tests {
     extern crate std;
 
     use crate::harness::TtlTestHarness;
-    use earnproof_shared::{IssuerStatus, TTL_THRESHOLD_LEDGERS};
+    use earnproof_shared::{IssuerRevocationState, IssuerStatus, TTL_THRESHOLD_LEDGERS};
     use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
     use soroban_sdk::{Address, BytesN, Env};
 
@@ -185,5 +185,25 @@ mod tests {
 
         let is_active = client.is_active_address(&issuer_1);
         assert!(is_active);
+    }
+
+    #[test]
+    fn revocation_tombstone_remains_queryable_and_refreshable_at_ttl_boundary() {
+        let env = Env::default();
+        let (client, _admin, issuer_1) = setup(&env);
+        let issuer_id = bytes(&env, 21);
+        client.register_issuer(&issuer_id, &issuer_1, &bytes(&env, 22), &bytes(&env, 99));
+        client.revoke_issuer(&bytes(&env, 23), &issuer_id, &bytes(&env, 24));
+
+        let current_ledger = TtlTestHarness::current_ledger(&env);
+        let expiry =
+            TtlTestHarness::calculate_expiry(current_ledger, TTL_THRESHOLD_LEDGERS, 500_000);
+        TtlTestHarness::advance_to_ledger(&env, TtlTestHarness::at_expiry_ledger(expiry));
+
+        let result = client.get_issuer_revocation_tombstone(&issuer_id);
+        assert_eq!(result.state, IssuerRevocationState::Revoked);
+        assert_eq!(result.issuer_id_hash, issuer_id);
+        assert_ne!(result.version, 0);
+        assert!(client.keepalive_revocation_tombstone(&bytes(&env, 21)));
     }
 }

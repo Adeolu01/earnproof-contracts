@@ -41,6 +41,8 @@ Each is asserted in [`tests/events/`](../tests/events/); the mapping is in
 | `schema_approved` | `approve_schema_version` | `version` |
 | `schema_deprecated` | `deprecate_schema_version` | `version` |
 | `schema_predecessor_set` | `approve_schema_with_predecessor` | `version`, `predecessor` |
+| `pause_acknowledged` | `acknowledge_pause` | `record` |
+| `pause_acknowledger_changed` | `set_pause_acknowledger` | `address`, `enabled`, `changed_by` |
 
 `approve_schema_with_predecessor` approves a schema version and records the
 prior version it succeeds. It publishes `schema_predecessor_set` with the
@@ -58,6 +60,8 @@ lineage link and `schema_approved` for the approval itself. A predecessor-less
 | `issuer_reactivated` | `reactivate_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at` |
 | `issuer_revoked` | `revoke_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at` |
 | `issuer_address_rotated` | `rotate_issuer_address` | `issuer_id_hash`, `old_address`, `new_address`, `updated_at` |
+| `issuer_signing_key_compromised` | `mark_signing_key_compromised` | `record`, `marked_by` |
+| `governance_role_delay_changed` | `set_role_activation_delay` | `role`, `previous_delay_ledgers`, `new_delay_ledgers`, `changed_by` |
 
 `issuer_address_rotated` carries both addresses so an indexer can update its
 address→issuer mapping without scanning storage. An indexer that ignores
@@ -84,6 +88,8 @@ documented `0` sentinel.
 |---|---|---|
 | `proof_registered` | `register_proof` | `proof_id_hash`, `issuer_address`, `schema_version`, `created_ledger`, `created_at`, `expires_at`, `epoch` |
 | `proof_revoked` | `revoke_proof`, `admin_revoke_proof` | `proof_id_hash`, `revoked_at`, `revoked_ledger`, `by_admin`, `epoch` |
+| `pause_acknowledged` | `acknowledge_pause` | `record` |
+| `pause_acknowledger_changed` | `set_pause_acknowledger` | `address`, `enabled`, `changed_by` |
 
 `proof_registered` carries the on-chain creation timing, sourced from the
 ledger, and the registry epoch after the mutation. `proof_revoked` carries both

@@ -33,6 +33,8 @@ pub const LEDGER_TIMESTAMP_UNSET: u64 = 0;
 /// Initial metadata revision assigned to an issuer at registration. Each
 /// accepted metadata update increments the revision by one.
 pub const METADATA_REVISION_INITIAL: u32 = 1;
+/// Current encoding version for issuer revocation tombstones.
+pub const ISSUER_REVOCATION_TOMBSTONE_VERSION: u32 = 1;
 
 /// Minimum ledgers between approval and execution (timelock).
 /// Prevents immediate execution of just-approved upgrades.
@@ -43,6 +45,9 @@ pub const UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
 /// Stale approvals expire and must be re-approved.
 /// ~30 days at 5s/ledger = 518_400 ledgers
 pub const UPGRADE_APPROVAL_EXPIRY_LEDGERS: u32 = 518_400;
+/// Maximum lifetime of an administrator transfer nomination. A nomination is
+/// valid in `[nominated_at_ledger, expires_at_ledger)`.
+pub const ADMIN_TRANSFER_EXPIRY_LEDGERS: u32 = 120_960;
 /// Maximum number of distinct signers in a critical-action approval policy.
 pub const MAX_CRITICAL_ACTION_SIGNERS: u32 = 16;
 /// Maximum lifetime of a critical-action proposal, in ledgers.
@@ -83,6 +88,8 @@ pub struct MigrationStatus {
 
 /// Canonical configuration digest payload version.
 pub const CONFIG_DIGEST_VERSION: u32 = 1;
+/// Canonical encoding version for per-schema policy digests.
+pub const SCHEMA_POLICY_DIGEST_VERSION: u32 = 1;
 
 /// Version tag mixed into every computed genesis identifier so a future
 /// change to the derivation scheme is distinguishable from a collision.
@@ -99,13 +106,20 @@ pub const DEFAULT_SCHEMA_RATE_LIMIT: u32 = u32::MAX;
 
 /// Maximum validity duration that protocol governance may assign to a schema.
 pub const MAX_SCHEMA_VALIDITY_SECONDS: u64 = 3_153_600_000;
+/// Maximum governed notice before a schema may become active (one year).
+pub const MAX_SCHEMA_ACTIVATION_NOTICE_SECONDS: u64 = 31_536_000;
 /// Maximum number of numeric proof types allowed in one schema policy.
 pub const MAX_SCHEMA_PROOF_TYPES: u32 = 16;
+/// Maximum number of nullifier domain versions governance may keep indexed.
+pub const MAX_NULLIFIER_DOMAIN_VERSIONS: u32 = 16;
 /// Compatibility proof type used by legacy registration entry points.
 pub const LEGACY_PROOF_TYPE: u32 = 0;
 /// Stable commitment algorithm identifiers; zero retains the legacy behavior.
 pub const LEGACY_COMMITMENT_ALGORITHM: u32 = 0;
 pub const SHA256_COMMITMENT_ALGORITHM_V1: u32 = 1;
+
+/// Current encoding version for governed proof-dispute filing windows.
+pub const DISPUTE_FILING_POLICY_VERSION: u32 = 1;
 
 /// Governed, fixed-size issuance policy for one schema version.
 #[contracttype]
@@ -180,6 +194,102 @@ pub struct ProofPayloadRecord {
 pub struct SchemaPolicy {
     pub proof_types: soroban_sdk::Vec<u32>,
     pub max_validity_seconds: u64,
+}
+
+/// Immutable lifecycle timestamp used as the origin of a dispute filing window.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DisputeFilingAnchor {
+    Created,
+    Activated,
+    Expired,
+    Revoked,
+}
+
+/// Governed dispute filing window. A filing is eligible when the ledger
+/// timestamp is in `[anchor + opens_after_seconds, anchor + closes_after_seconds)`.
+/// Saturating timestamp arithmetic is required by every consumer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeFilingPolicy {
+    pub version: u32,
+    pub anchor: DisputeFilingAnchor,
+    pub opens_after_seconds: u64,
+    pub closes_after_seconds: u64,
+}
+
+/// Deterministic reason returned by the proof-registry eligibility query.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DisputeFilingStatus {
+    Eligible,
+    NotYetOpen,
+    Closed,
+    AnchorUnavailable,
+}
+
+/// Fully resolved filing-window result for one proof and one policy snapshot.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeFilingEligibility {
+    pub policy_version: u32,
+    pub anchor: DisputeFilingAnchor,
+    pub anchor_timestamp: u64,
+    pub opens_at: u64,
+    pub closes_at: u64,
+    pub evaluated_at: u64,
+    pub status: DisputeFilingStatus,
+}
+
+/// Latest governed activation/deprecation timestamps for a schema version.
+/// Kept as a sidecar so legacy schema approval entries remain decodable.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaLifecyclePolicy {
+    pub activated_at: u64,
+    pub deprecated_at: u64,
+}
+
+/// Versioned schema-policy commitment returned to clients.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaPolicyDigest {
+    pub digest_version: u32,
+    pub config_version: u32,
+    pub schema_version: u32,
+    pub digest: BytesN<32>,
+}
+
+/// Inputs committed by the version-1 schema-policy digest.
+pub struct SchemaPolicyDigestInput<'a> {
+    pub schema_version: u32,
+    pub config_version: u32,
+    pub approved: bool,
+    pub lifecycle: &'a SchemaLifecyclePolicy,
+    pub policy: &'a SchemaPolicy,
+    pub payload_limit: u32,
+    pub rate_limit: &'a SchemaRateLimit,
+}
+
+/// Hashes the canonical version-1 schema-policy tuple. Field order is part of
+/// the public encoding and must only change under a new digest version.
+pub fn compute_schema_policy_digest(env: &Env, input: &SchemaPolicyDigestInput<'_>) -> BytesN<32> {
+    let payload = (
+        SCHEMA_POLICY_DIGEST_VERSION,
+        Symbol::new(env, "earnproof_schema_policy"),
+        input.schema_version,
+        input.config_version,
+        input.approved,
+        input.lifecycle.activated_at,
+        input.lifecycle.deprecated_at,
+        input.policy.proof_types.clone(),
+        input.policy.max_validity_seconds,
+        input.payload_limit,
+        input.rate_limit.max_registrations,
+        input.rate_limit.window_ledgers,
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
 }
 
 /// Immutable registration metadata kept separately from `ProofRecord` so
@@ -380,6 +490,25 @@ pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion
 
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AdminTransferState {
+    Absent,
+    Pending,
+    Expired,
+}
+
+/// Query result shared by every contract that supports two-step admin transfer.
+/// Zero ledger values identify a legacy nomination without expiry sidecars.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferStatus {
+    pub state: AdminTransferState,
+    pub pending_admin: Option<Address>,
+    pub nominated_at_ledger: u32,
+    pub expires_at_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum GovernanceRole {
     ProtocolPause,
     SchemaManagement,
@@ -388,6 +517,18 @@ pub enum GovernanceRole {
     DependencyManagement,
     UpgradeManagement,
     Recovery,
+}
+
+/// Maximum configurable delay between granting a governance role and its
+/// activation (approximately one week at five-second ledgers).
+pub const MAX_GOVERNANCE_ROLE_ACTIVATION_DELAY_LEDGERS: u32 = 120_960;
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceAssignmentState {
+    Pending,
+    Active,
+    Expired,
 }
 
 #[contracttype]
@@ -411,6 +552,16 @@ impl GovernanceRoleAssignment {
 
     pub fn is_pending_at(&self, ledger: u32) -> bool {
         ledger < self.activation_ledger
+    }
+
+    pub fn state_at(&self, ledger: u32) -> GovernanceAssignmentState {
+        if self.is_pending_at(ledger) {
+            GovernanceAssignmentState::Pending
+        } else if self.is_active_at(ledger) {
+            GovernanceAssignmentState::Active
+        } else {
+            GovernanceAssignmentState::Expired
+        }
     }
 }
 
@@ -509,6 +660,9 @@ pub enum ContractError {
     // Input validation errors (60-79)
     InvalidInput = 60,
     InvalidAddress = 61,
+    /// A nominated administrator attempted acceptance at or after the
+    /// nomination's exclusive expiry ledger.
+    AdminNominationExpired = 63,
     /// A bounded batch query supplied more items than its documented maximum.
     BatchTooLarge = 64,
     /// A cross-contract dependency reported an interface version outside the
@@ -551,6 +705,11 @@ pub enum IssuerError {
     InvalidMetadataCommitment = 211,
     /// A batch query supplied more identifiers than [`MAX_ISSUER_STATUS_BATCH`].
     BatchTooLarge = 212,
+    /// The assurance policy version or compact assurance tier is outside the
+    /// supported version-1 bounds.
+    InvalidAssuranceLevel = 213,
+    /// A per-issuer monotonic sequence cannot be advanced without overflow.
+    SequenceOverflow = 214,
     /// A requested capacity limit is below the current active-issuer usage and
     /// no explicit override was supplied.
     MaxBelowActiveUsage = 209,
@@ -628,6 +787,12 @@ pub enum ProofError {
     PredecessorNotFound = 323,
     /// The predecessor already has the maximum number of successors.
     TooManySuccessors = 324,
+    /// The governed dispute filing window has not opened, has closed, or its
+    /// lifecycle anchor does not exist for this proof.
+    DisputeFilingWindowClosed = 325,
+    /// The requested subject-nullifier domain version is not currently
+    /// supported by protocol governance.
+    UnsupportedNullifierDomain = 326,
 }
 
 /// Versioned asset identifier accepted by context-aware proof registration.
@@ -789,6 +954,61 @@ pub fn compute_subject_pseudonym_commitment(
     Some(env.crypto().sha256(&preimage).to_bytes())
 }
 
+/// A proof's opaque subject nullifier together with the governed derivation
+/// domain version used by the issuer. The raw subject identifier is never
+/// stored.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubjectNullifier {
+    pub domain_version: u32,
+    pub commitment: BytesN<32>,
+}
+
+/// Computes a versioned subject-nullifier commitment. Version 1 delegates to
+/// the legacy pseudonym derivation byte-for-byte so existing commitments remain
+/// stable. Later versions use an XDR-encoded, version-tagged domain.
+pub fn compute_subject_nullifier_commitment(
+    env: &Env,
+    issuer_address: &Address,
+    domain_version: u32,
+    domain: &String,
+    subject_pseudonym: &BytesN<32>,
+) -> Option<BytesN<32>> {
+    if domain_version == 0 {
+        return None;
+    }
+    if domain_version == 1 {
+        return compute_subject_pseudonym_commitment(
+            env,
+            issuer_address,
+            domain,
+            subject_pseudonym,
+        );
+    }
+    if !is_valid_account_address(issuer_address) {
+        return None;
+    }
+    let domain_bytes = domain.to_bytes();
+    let domain_len = domain_bytes.len();
+    if domain_len == 0 || domain_len > 64 {
+        return None;
+    }
+    for index in 0..domain_len {
+        if !(0x21..=0x7e).contains(&domain_bytes.get(index)?) {
+            return None;
+        }
+    }
+    let payload = (
+        Symbol::new(env, "earnproof_subject_nullifier"),
+        domain_version,
+        issuer_address.clone(),
+        domain.clone(),
+        subject_pseudonym.clone(),
+    )
+        .to_xdr(env);
+    Some(env.crypto().sha256(&payload).to_bytes())
+}
+
 /// Interprets the all-zero commitment sentinel as explicit absence.
 pub fn optional_subject_pseudonym_commitment(commitment: &BytesN<32>) -> Option<BytesN<32>> {
     if commitment.to_array() == [0; 32] {
@@ -819,12 +1039,18 @@ pub enum ConfigChangeCategory {
     PauseToggle,
     ScopedPause,
     SchemaApproval,
+    SchemaActivation,
+    SchemaActivationNotice,
     SchemaDeprecation,
+    SchemaReplacement,
     SchemaPayloadLimit,
     SchemaPolicy,
+    SchemaRateLimit,
     CommitmentAlgorithmPolicy,
     ApprovalPolicyUpdate,
     EmergencyPolicyUpdate,
+    DisputeFilingPolicy,
+    NullifierDomainPolicy,
 }
 
 /// Category of a protocol mutation that may require threshold approval.
@@ -832,7 +1058,9 @@ pub enum ConfigChangeCategory {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum CriticalActionCategory {
     SchemaApproval,
+    SchemaActivation,
     SchemaDeprecation,
+    SchemaReplacement,
     SchemaPayloadLimit,
     IssuerRegistryReplacement,
     ProtocolConfigReplacement,
@@ -845,7 +1073,9 @@ pub enum CriticalActionCategory {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CriticalAction {
     SchemaApproval(u32),
+    SchemaActivation(u32, u64),
     SchemaDeprecation(u32),
+    SchemaReplacement(u32, u32, SchemaCompatibility),
     SchemaPayloadLimit(u32, u32),
     IssuerRegistryReplacement(Address),
     ProtocolConfigReplacement(Address),
@@ -857,7 +1087,9 @@ impl CriticalAction {
     pub fn category(&self) -> CriticalActionCategory {
         match self {
             Self::SchemaApproval(_) => CriticalActionCategory::SchemaApproval,
+            Self::SchemaActivation(_, _) => CriticalActionCategory::SchemaActivation,
             Self::SchemaDeprecation(_) => CriticalActionCategory::SchemaDeprecation,
+            Self::SchemaReplacement(_, _, _) => CriticalActionCategory::SchemaReplacement,
             Self::SchemaPayloadLimit(_, _) => CriticalActionCategory::SchemaPayloadLimit,
             Self::IssuerRegistryReplacement(_) => CriticalActionCategory::IssuerRegistryReplacement,
             Self::ProtocolConfigReplacement(_) => CriticalActionCategory::ProtocolConfigReplacement,
@@ -865,6 +1097,47 @@ impl CriticalAction {
             Self::EmergencyPolicyUpdate(_) => CriticalActionCategory::EmergencyPolicyUpdate,
         }
     }
+}
+
+/// Compatibility guidance published with a schema replacement pointer.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SchemaCompatibility {
+    BackwardCompatible,
+    MigrationRequired,
+    Breaking,
+}
+
+/// Immutable, versioned pointer from a deprecated schema to its successor.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaReplacementPointer {
+    pub pointer_version: u32,
+    pub deprecated_version: u32,
+    pub replacement_version: u32,
+    pub compatibility: SchemaCompatibility,
+    pub effective_ledger: u32,
+}
+
+/// Immutable activation boundary captured when a schema is scheduled.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaActivationNotice {
+    pub notice_version: u32,
+    pub schema_version: u32,
+    pub proposed_at: u64,
+    pub activates_at: u64,
+    pub minimum_notice_seconds: u64,
+}
+
+/// Query state for a schema activation schedule.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SchemaActivationState {
+    Unknown,
+    Pending,
+    Active,
+    Deprecated,
 }
 
 /// Optional multi-party approval policy for critical protocol actions.
@@ -1045,6 +1318,29 @@ pub enum PauseScope {
 }
 
 #[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PauseAcknowledgementRole {
+    Administrator,
+    IncidentOperator,
+}
+
+/// Immutable commitment-only evidence that an authorized operator reviewed an
+/// active pause. It deliberately contains no raw incident response data.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseAcknowledgementRecord {
+    pub record_version: u32,
+    pub sequence: u32,
+    pub scope: PauseScope,
+    pub acknowledgement_hash: BytesN<32>,
+    pub acknowledged_by: Address,
+    pub role: PauseAcknowledgementRole,
+    pub acknowledged_at_ledger: u32,
+}
+
+pub const MAX_PAUSE_ACKNOWLEDGEMENT_HISTORY_PAGE: u32 = 20;
+
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IssuerStatus {
     Active,
@@ -1137,6 +1433,39 @@ pub struct IssuerStatusResult {
     pub status: IssuerQueryStatus,
 }
 
+/// Minimal durable evidence that an issuer identifier was revoked. It excludes
+/// addresses, metadata, policy commitments, and revocation reasons.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerRevocationTombstone {
+    pub version: u32,
+    pub issuer_id_hash: BytesN<32>,
+    pub revoked_at: u64,
+    pub revoked_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum IssuerRevocationState {
+    Unknown,
+    NotRevoked,
+    Revoked,
+}
+
+/// One direct or bounded-batch revocation lookup result.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerRevocationResult {
+    pub issuer_id_hash: BytesN<32>,
+    pub state: IssuerRevocationState,
+    /// Zero for `Unknown` and `NotRevoked`.
+    pub version: u32,
+    /// Zero for `Unknown` and `NotRevoked`.
+    pub revoked_at: u64,
+    /// Zero for `Unknown` and `NotRevoked`.
+    pub revoked_ledger: u32,
+}
+
 /// Privacy-safe issuer signing-key commitment. Only a key digest and algorithm
 /// identifier are persisted; raw public or private keys are never accepted.
 #[contracttype]
@@ -1147,6 +1476,55 @@ pub struct SigningKeyCommitment {
     pub activated_ledger: u32,
 }
 
+/// Number of most-recent key lifecycle transitions retained per issuer.
+pub const SIGNING_KEY_LIFECYCLE_HISTORY_CAPACITY: u32 = 32;
+/// Maximum lifecycle transitions returned by one query.
+pub const MAX_SIGNING_KEY_LIFECYCLE_PAGE: u32 = 20;
+
+/// Checked advancement used by signing-key lifecycle transitions. Callers
+/// reserve every sequence a compound transition needs before writing state.
+pub fn checked_signing_key_sequence(current: u64, steps: u32) -> Option<u64> {
+    current.checked_add(u64::from(steps))
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SigningKeyLifecycleTransition {
+    Proposed,
+    Activated,
+    Retired,
+    Compromised,
+}
+
+/// Versioned public lifecycle sidecar for an issuer signing-key commitment.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SigningKeyLifecycleRecord {
+    pub record_version: u32,
+    pub key_hash: BytesN<32>,
+    pub algorithm: u32,
+    pub transition: SigningKeyLifecycleTransition,
+    pub sequence: u64,
+    pub effective_ledger: u32,
+}
+
+/// Immutable, privacy-safe evidence that an issuer signing-key commitment was
+/// declared compromised. Raw public or private key material is never stored.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompromisedSigningKeyRecord {
+    pub record_version: u32,
+    pub issuer_id_hash: BytesN<32>,
+    pub key_hash: BytesN<32>,
+    pub algorithm: u32,
+    pub effective_ledger: u32,
+    pub reason_hash: BytesN<32>,
+    pub sequence: u32,
+}
+
+/// Maximum number of compromised-key records returned by one history query.
+pub const MAX_SIGNING_KEY_COMPROMISE_HISTORY_PAGE: u32 = 20;
+
 /// Versioned opaque commitments for issuer classification policy documents.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1154,6 +1532,30 @@ pub struct IssuerPolicyCommitments {
     pub encoding_version: u32,
     pub category_commitment: BytesN<32>,
     pub jurisdiction_commitment: BytesN<32>,
+}
+
+/// Encoding version for issuer assurance tier commitments.
+pub const ISSUER_ASSURANCE_COMMITMENT_VERSION: u32 = 1;
+/// Assurance tiers are deliberately compact public policy identifiers. Raw
+/// accreditation material is never accepted or stored.
+pub const MAX_ISSUER_ASSURANCE_LEVEL: u32 = 255;
+/// Number of most-recent assurance changes retained per issuer.
+pub const ISSUER_ASSURANCE_HISTORY_CAPACITY: u32 = 16;
+/// Maximum number of assurance history records returned by one query.
+pub const MAX_ISSUER_ASSURANCE_HISTORY_PAGE: u32 = 16;
+
+/// Versioned issuer assurance tier committed by registry governance.
+///
+/// `sequence` is monotonic per issuer. Proof policies that bind this value can
+/// retain the exact sequence independently; changing the current tier never
+/// mutates an earlier record or an existing proof.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerAssuranceLevelCommitment {
+    pub commitment_version: u32,
+    pub assurance_level: u32,
+    pub effective_ledger: u32,
+    pub sequence: u32,
 }
 
 /// Maximum schema versions accepted by one bounded status query.
@@ -1883,6 +2285,47 @@ mod proof_context_tests {
             &BytesN::from_array(&env, &[0x33; 32]),
         )
         .is_none());
+    }
+
+    #[test]
+    fn nullifier_domain_versions_preserve_v1_and_separate_later_versions() {
+        let env = Env::default();
+        let issuer = Address::from_str(&env, ISSUER);
+        let domain = String::from_str(&env, "credential-verification");
+        let pseudonym = BytesN::from_array(&env, &[0x42; 32]);
+        let legacy = compute_subject_pseudonym_commitment(&env, &issuer, &domain, &pseudonym)
+            .expect("legacy commitment");
+        assert_eq!(
+            compute_subject_nullifier_commitment(&env, &issuer, 1, &domain, &pseudonym),
+            Some(legacy.clone())
+        );
+        let v2 = compute_subject_nullifier_commitment(&env, &issuer, 2, &domain, &pseudonym)
+            .expect("v2 commitment");
+        assert_ne!(legacy, v2);
+        assert_eq!(
+            v2,
+            compute_subject_nullifier_commitment(&env, &issuer, 2, &domain, &pseudonym)
+                .expect("deterministic v2 commitment")
+        );
+        assert!(
+            compute_subject_nullifier_commitment(&env, &issuer, 0, &domain, &pseudonym).is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod signing_key_sequence_tests {
+    use super::checked_signing_key_sequence;
+
+    #[test]
+    fn sequence_advancement_rejects_overflow_atomically() {
+        assert_eq!(checked_signing_key_sequence(0, 1), Some(1));
+        assert_eq!(
+            checked_signing_key_sequence(u64::MAX - 1, 1),
+            Some(u64::MAX)
+        );
+        assert_eq!(checked_signing_key_sequence(u64::MAX - 1, 2), None);
+        assert_eq!(checked_signing_key_sequence(u64::MAX, 1), None);
     }
 }
 

@@ -1,0 +1,28 @@
+{
+  "event": "GovernanceRoleDelayChanged",
+  "contract": "issuer-registry",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["GovernanceRoleDelayChanged"],
+  "payload": {
+    "role": {
+      "type": "GovernanceRole",
+      "description": "Role whose delay policy changed."
+    },
+    "previous_delay_ledgers": {
+      "type": "U32",
+      "description": "Delay policy before this change."
+    },
+    "new_delay_ledgers": {
+      "type": "U32",
+      "description": "Delay applied to future assignments."
+    },
+    "changed_by": {
+      "type": "Address",
+      "description": "Administrator that changed the delay."
+    }
+  },
+  "emitted_by": "set_role_activation_delay",
+  "description": "Emitted when a role-specific activation delay changes.",
+  "compatibility": "additive"
+}

@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 59] = [
+pub const ERROR_CATALOG: [ErrorSpec; 61] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -263,6 +263,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 59] = [
         remediation: "Bind a dependency whose interface version is compatible: same major and at least the minor and patch the consumer requires. Read the accepted version from the consumer before retrying.",
         http_status: 400,
         client_message: "Incompatible dependency version",
+    },
+    ErrorSpec {
+        code: 63,
+        name: "AdminNominationExpired",
+        enum_name: "ContractError",
+        domain: Domain::Common,
+        status: Status::Returned,
+        cause: "An administrator transfer was accepted at or after its exclusive expiry ledger, or a legacy nomination has no expiry metadata.",
+        retry: Retry::AfterOperatorAction,
+        remediation: "Have the current administrator create a fresh nomination, then accept it before the reported expiry ledger.",
+        http_status: 409,
+        client_message: "Administrator nomination has expired",
     },
     ErrorSpec {
         code: 64,
@@ -565,6 +577,30 @@ pub const ERROR_CATALOG: [ErrorSpec; 59] = [
         client_message: "Request batch is too large",
     },
     ErrorSpec {
+        code: 213,
+        name: "InvalidAssuranceLevel",
+        enum_name: "IssuerError",
+        domain: Domain::IssuerRegistry,
+        status: Status::Returned,
+        cause: "An issuer assurance change used an unsupported commitment version or a tier outside the documented 1-255 range.",
+        retry: Retry::AfterCallerChange,
+        remediation: "Use commitment version 1 and a public assurance tier from 1 through 255.",
+        http_status: 400,
+        client_message: "Invalid issuer assurance level",
+    },
+    ErrorSpec {
+        code: 214,
+        name: "SequenceOverflow",
+        enum_name: "IssuerError",
+        domain: Domain::IssuerRegistry,
+        status: Status::Returned,
+        cause: "A per-issuer monotonic sequence reached its maximum value and cannot advance.",
+        retry: Retry::AfterOperatorAction,
+        remediation: "Do not retry the transition unchanged. Governance must migrate the sequence representation before another lifecycle change.",
+        http_status: 409,
+        client_message: "Issuer sequence cannot advance",
+    },
+    ErrorSpec {
         code: 300,
         name: "ProofAlreadyRegistered",
         enum_name: "ProofError",
@@ -863,6 +899,30 @@ pub const ERROR_CATALOG: [ErrorSpec; 59] = [
         remediation: "A predecessor can only have a bounded number of successors.",
         http_status: 400,
         client_message: "Too many successors",
+    },
+    ErrorSpec {
+        code: 325,
+        name: "DisputeFilingWindowClosed",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "The governed dispute filing window has not opened, has closed, or its lifecycle anchor is unavailable.",
+        retry: Retry::Never,
+        remediation: "Read get_dispute_filing_eligibility before filing and do not replay a request outside its reported half-open window.",
+        http_status: 400,
+        client_message: "Dispute filing window is closed",
+    },
+    ErrorSpec {
+        code: 326,
+        name: "UnsupportedNullifierDomain",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "The proof supplied a subject-nullifier domain version that protocol governance does not support.",
+        retry: Retry::AfterOperatorAction,
+        remediation: "Query get_nullifier_domain_versions and submit a nullifier derived under a currently supported version.",
+        http_status: 400,
+        client_message: "Unsupported nullifier domain version",
     },
 ];
 

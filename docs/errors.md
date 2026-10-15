@@ -88,6 +88,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 60 | `InvalidInput` | `ContractError` | common | returned | after-caller-change | 400 |
 | 61 | `InvalidAddress` | `ContractError` | common | returned | after-caller-change | 400 |
 | 62 | `IncompatibleInterfaceVersion` | `ContractError` | common | returned | after-caller-change | 400 |
+| 63 | `AdminNominationExpired` | `ContractError` | common | returned | after-operator-action | 409 |
 | 64 | `BatchTooLarge` | `ContractError` | common | returned | after-caller-change | 400 |
 | 80 | `ProtocolPaused` | `ContractError` | common | reserved | after-operator-action | 503 |
 | 90 | `NoUpgradeApproval` | `ContractError` | common | returned | after-operator-action | 403 |
@@ -138,6 +139,8 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 322 | `CrossIssuerSupersession` | `ProofError` | proof-registry | returned | never | 403 |
 | 323 | `PredecessorNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 324 | `TooManySuccessors` | `ProofError` | proof-registry | returned | never | 400 |
+| 325 | `DisputeFilingWindowClosed` | `ProofError` | proof-registry | returned | never | 400 |
+| 326 | `UnsupportedNullifierDomain` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 
 ## Details
 ### 1 - `AlreadyInitialized`
@@ -238,6 +241,17 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: Bind a dependency whose interface version is compatible: same major and at least the minor and patch the consumer requires. Read the accepted version from the consumer before retrying.
 - Suggested HTTP status: 400
 - Client message: "Incompatible dependency version"
+
+### 63 - `AdminNominationExpired`
+
+- Enum: `ContractError`
+- Domain: common
+- Status: returned
+- Retry: after-operator-action
+- Cause: An administrator transfer was accepted at or after its exclusive expiry ledger, or a legacy nomination has no expiry metadata.
+- Remediation: Have the current administrator create a fresh nomination, then accept it before the reported expiry ledger.
+- Suggested HTTP status: 409
+- Client message: "Administrator nomination has expired"
 
 ### 64 - `BatchTooLarge`
 
@@ -788,5 +802,27 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: A predecessor can only have a bounded number of successors.
 - Suggested HTTP status: 400
 - Client message: "Too many successors"
+
+### 325 - `DisputeFilingWindowClosed`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: The governed dispute filing window has not opened, has closed, or its lifecycle anchor is unavailable.
+- Remediation: Read `get_dispute_filing_eligibility` before filing and do not replay a request outside its reported half-open window.
+- Suggested HTTP status: 400
+- Client message: "Dispute filing window is closed"
+
+### 326 - `UnsupportedNullifierDomain`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-operator-action
+- Cause: The proof supplied a subject-nullifier domain version that protocol governance does not support.
+- Remediation: Query `get_nullifier_domain_versions` and submit a nullifier derived under a currently supported version.
+- Suggested HTTP status: 400
+- Client message: "Unsupported nullifier domain version"
 
 <!-- END GENERATED -->

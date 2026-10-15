@@ -10,6 +10,7 @@
 60	InvalidInput	ContractError	common	returned	after-caller-change	400
 61	InvalidAddress	ContractError	common	returned	after-caller-change	400
 62	IncompatibleInterfaceVersion	ContractError	common	returned	after-caller-change	400
+63	AdminNominationExpired	ContractError	common	returned	after-operator-action	409
 64	BatchTooLarge	ContractError	common	returned	after-caller-change	400
 80	ProtocolPaused	ContractError	common	reserved	after-operator-action	503
 90	NoUpgradeApproval	ContractError	common	returned	after-operator-action	403
@@ -35,6 +36,8 @@
 210	ReactivationCooldownActive	IssuerError	issuer-registry	returned	after-caller-change	400
 211	InvalidMetadataCommitment	IssuerError	issuer-registry	returned	after-caller-change	400
 212	BatchTooLarge	IssuerError	issuer-registry	returned	after-caller-change	400
+213	InvalidAssuranceLevel	IssuerError	issuer-registry	returned	after-caller-change	400
+214	SequenceOverflow	IssuerError	issuer-registry	returned	after-operator-action	409
 300	ProofAlreadyRegistered	ProofError	proof-registry	returned	never	409
 301	ProofNotFound	ProofError	proof-registry	returned	after-caller-change	404
 302	ProofAlreadyRevoked	ProofError	proof-registry	returned	never	400
@@ -60,3 +63,5 @@
 322	CrossIssuerSupersession	ProofError	proof-registry	returned	never	403
 323	PredecessorNotFound	ProofError	proof-registry	returned	after-caller-change	404
 324	TooManySuccessors	ProofError	proof-registry	returned	never	400
+325	DisputeFilingWindowClosed	ProofError	proof-registry	returned	never	400
+326	UnsupportedNullifierDomain	ProofError	proof-registry	returned	after-operator-action	400
