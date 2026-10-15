@@ -85,6 +85,7 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 | Compromised Key Marker | `CompromisedSigningKey(issuer, key, algorithm)` | direct status query | Returns `None` | ✓ Yes |
 | Compromised Key History | `CompromisedSigningKeyHistory(issuer, sequence)` | bounded paged query | Missing entries are omitted | ✓ Yes |
 | Compromised Key Count | `CompromisedSigningKeyCount(issuer)` | bounded paged query | Returns `0` | ✓ Yes |
+| Governance Role Delay | `GovernanceRoleDelay(role)` | policy reads and admin writes | Returns `0` for legacy/default policy | ✓ Yes |
 
 **Persistent TTL Extensions**: 
 - `extend_issuer_ttl(hash)`: extends `Issuer(hash)` entry
@@ -97,6 +98,7 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
   - `get_issuer_by_address()`: extends AddressIssuer entry on read
   - `mark_signing_key_compromised()`: stores and extends the immutable marker,
     sequence entry, and per-issuer count
+  - `set_role_activation_delay()`: stores and extends the per-role policy
 
 **Critical**: Both `Issuer(hash)` and `AddressIssuer(addr)` for a single issuer are extended together. If one expires, the other will too (same operation). Both must be present for `is_active_address()` to succeed.
 

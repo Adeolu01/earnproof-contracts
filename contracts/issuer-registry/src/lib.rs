@@ -2,14 +2,14 @@
 
 use earnproof_shared::{
     AdminTransferState, AdminTransferStatus, CompromisedSigningKeyRecord, ContractError,
-    GenesisRecord, GovernanceRole, GovernanceRoleAssignment, InterfaceVersion, IssuerError,
-    IssuerPolicyCommitments, IssuerQueryStatus, IssuerRecord, IssuerStatus, IssuerStatusResult,
-    MigrationStatus, RotationRecord, SigningKeyCommitment, TtlStatus, UpgradeApproval,
-    UpgradeReceipt, ADMIN_TRANSFER_EXPIRY_LEDGERS, ISSUER_REGISTRY_INTERFACE_VERSION,
+    GenesisRecord, GovernanceAssignmentState, GovernanceRole, GovernanceRoleAssignment,
+    InterfaceVersion, IssuerError, IssuerPolicyCommitments, IssuerQueryStatus, IssuerRecord,
+    IssuerStatus, IssuerStatusResult, MigrationStatus, RotationRecord, SigningKeyCommitment,
+    TtlStatus, UpgradeApproval, UpgradeReceipt, ADMIN_TRANSFER_EXPIRY_LEDGERS,
+    ISSUER_REGISTRY_INTERFACE_VERSION, MAX_GOVERNANCE_ROLE_ACTIVATION_DELAY_LEDGERS,
     MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH, MAX_SIGNING_KEY_COMPROMISE_HISTORY_PAGE,
-    METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION,
-    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS,
-    UPGRADE_TIMELOCK_LEDGERS,
+    METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS,
+    TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec};
 
@@ -66,6 +66,7 @@ enum DataKey {
     ReactivatableAt(BytesN<32>),
     PendingIssuerRotation(BytesN<32>),
     GovernanceAssignment(GovernanceRole, Address),
+    GovernanceRoleDelay(GovernanceRole),
 }
 
 #[contractevent]
@@ -79,6 +80,14 @@ pub struct GovernanceRoleRemoved {
     pub role: GovernanceRole,
     pub address: Address,
     pub removed_by: Address,
+}
+
+#[contractevent]
+pub struct GovernanceRoleDelayChanged {
+    pub role: GovernanceRole,
+    pub previous_delay_ledgers: u32,
+    pub new_delay_ledgers: u32,
+    pub changed_by: Address,
 }
 
 #[contracttype]
@@ -308,9 +317,15 @@ impl IssuerRegistryContract {
         let admin = Self::get_admin(env.clone()).map_err(|_| ContractError::NotInitialized)?;
         Self::require_auth(&admin);
         Self::require_valid_issuer_address(&address).map_err(|_| ContractError::InvalidAddress)?;
+        let minimum_activation = env
+            .ledger()
+            .sequence()
+            .checked_add(Self::get_role_activation_delay(env.clone(), role))
+            .ok_or(ContractError::InvalidTimingConfig)?;
+        let effective_activation = activation_ledger.max(minimum_activation);
         if role == GovernanceRole::Recovery
             || expiration_ledger
-                .map(|expiration| expiration <= activation_ledger)
+                .map(|expiration| expiration <= effective_activation)
                 .unwrap_or(false)
         {
             return Err(ContractError::InvalidTimingConfig);
@@ -319,7 +334,7 @@ impl IssuerRegistryContract {
         let assignment = GovernanceRoleAssignment {
             role,
             address: address.clone(),
-            activation_ledger,
+            activation_ledger: effective_activation,
             expiration_ledger,
             proposal_id,
         };
@@ -344,6 +359,58 @@ impl IssuerRegistryContract {
         env.storage()
             .persistent()
             .get(&DataKey::GovernanceAssignment(role, address))
+    }
+
+    pub fn get_governance_assignment_state(
+        env: Env,
+        role: GovernanceRole,
+        address: Address,
+    ) -> Option<GovernanceAssignmentState> {
+        let assignment = Self::get_governance_assignment(env.clone(), role, address)?;
+        Some(assignment.state_at(env.ledger().sequence()))
+    }
+
+    /// Sets the minimum delay for future grants of a role. Existing
+    /// assignments retain their snapshotted activation ledger.
+    pub fn set_role_activation_delay(
+        env: Env,
+        role: GovernanceRole,
+        delay_ledgers: u32,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone()).map_err(|_| ContractError::NotInitialized)?;
+        Self::require_auth(&admin);
+        if role == GovernanceRole::Recovery
+            || delay_ledgers > MAX_GOVERNANCE_ROLE_ACTIVATION_DELAY_LEDGERS
+        {
+            return Err(ContractError::InvalidTimingConfig);
+        }
+        let key = DataKey::GovernanceRoleDelay(role);
+        let previous_delay_ledgers = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &delay_ledgers);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        GovernanceRoleDelayChanged {
+            role,
+            previous_delay_ledgers,
+            new_delay_ledgers: delay_ledgers,
+            changed_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn get_role_activation_delay(env: Env, role: GovernanceRole) -> u32 {
+        let key = DataKey::GovernanceRoleDelay(role);
+        let delay = env.storage().persistent().get(&key);
+        if delay.is_some() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        delay.unwrap_or(0)
     }
 
     pub fn remove_governance_role(
