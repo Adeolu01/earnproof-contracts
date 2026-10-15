@@ -49,7 +49,7 @@ pub const CONTRACTS: [&str; 3] = ["issuer-registry", "proof-registry", "protocol
 /// Adding a row here is the second half of adding a storage key; the first is
 /// adding the `DataKey` variant. Doing one without the other fails the tests in
 /// `tests/storage-keys/`.
-pub const STORAGE_NAMESPACES: [StorageNamespace; 83] = [
+pub const STORAGE_NAMESPACES: [StorageNamespace; 66] = [
     StorageNamespace {
         contract: "issuer-registry",
         namespace: "ActiveIssuerCount",
@@ -272,6 +272,10 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 83] = [
         arity: 1,
         class: StorageClass::Persistent,
         value: "u32",
+        namespace: "RevocationTombstone",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "IssuerRevocationTombstone",
         owner: "registry operator",
     },
     StorageNamespace {
@@ -508,6 +512,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 83] = [
     },
     StorageNamespace {
         contract: "proof-registry",
+        namespace: "SubjectNullifier",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "SubjectNullifier",
+        owner: "issuing party",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
         namespace: "UpgradeApproval",
         arity: 0,
         class: StorageClass::Instance,
@@ -568,6 +580,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 83] = [
         arity: 0,
         class: StorageClass::Instance,
         value: "bool",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "DisputeFilingPolicy",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "DisputeFilingPolicy",
         owner: "protocol operator",
     },
     StorageNamespace {
@@ -668,6 +688,22 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 83] = [
     },
     StorageNamespace {
         contract: "protocol-config",
+        namespace: "SchemaLifecycle",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "SchemaLifecyclePolicy",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "SchemaRateLimit",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "SchemaRateLimit",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
         namespace: "SchemaPredecessor",
         arity: 1,
         class: StorageClass::Persistent,
@@ -712,6 +748,22 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 83] = [
         arity: 0,
         class: StorageClass::Instance,
         value: "Address",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "SubjectNullifierDomain",
+        arity: 1,
+        class: StorageClass::Instance,
+        value: "bool",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "SubjectNullifierDomains",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "Vec<u32>",
         owner: "protocol operator",
     },
 ];

@@ -113,6 +113,10 @@ pub fn issuer_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Issuer"), id.clone())
 }
 
+pub fn issuer_revocation_tombstone_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "RevocationTombstone"), id.clone())
+}
+
 pub fn issuer_index_key(env: &Env, index: u32) -> (Symbol, u32) {
     (Symbol::new(env, "IssuerIndex"), index)
 }
@@ -151,6 +155,10 @@ pub fn proof_context_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
 
 pub fn proof_subject_pseudonym_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(env, "ProofSubjectPseudonym"), id.clone())
+}
+
+pub fn proof_subject_nullifier_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "SubjectNullifier"), id.clone())
 }
 
 pub fn genesis_key() -> (Symbol,) {

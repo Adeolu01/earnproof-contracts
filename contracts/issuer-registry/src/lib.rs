@@ -10,6 +10,14 @@ use earnproof_shared::{
     MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH, MAX_SIGNING_KEY_COMPROMISE_HISTORY_PAGE,
     METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS,
     TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
+    ContractError, GenesisRecord, GovernanceRole, GovernanceRoleAssignment, InterfaceVersion,
+    IssuerError, IssuerPolicyCommitments, IssuerQueryStatus, IssuerRecord, IssuerRevocationResult,
+    IssuerRevocationState, IssuerRevocationTombstone, IssuerStatus, IssuerStatusResult,
+    MigrationStatus, RotationRecord, SigningKeyCommitment, TtlStatus, UpgradeApproval,
+    UpgradeReceipt, ISSUER_REGISTRY_INTERFACE_VERSION, ISSUER_REVOCATION_TOMBSTONE_VERSION,
+    MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH, METADATA_REVISION_INITIAL,
+    MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec};
 
@@ -67,6 +75,7 @@ enum DataKey {
     PendingIssuerRotation(BytesN<32>),
     GovernanceAssignment(GovernanceRole, Address),
     GovernanceRoleDelay(GovernanceRole),
+    RevocationTombstone(BytesN<32>),
 }
 
 #[contractevent]
@@ -807,6 +816,13 @@ impl IssuerRegistryContract {
         Self::require_auth(&admin);
 
         let key = DataKey::Issuer(issuer_id_hash.clone());
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::RevocationTombstone(issuer_id_hash.clone()))
+        {
+            return Err(IssuerError::IssuerRevoked);
+        }
         if env.storage().persistent().has(&key) {
             return Err(IssuerError::IssuerAlreadyRegistered);
         }
@@ -1608,6 +1624,72 @@ impl IssuerRegistryContract {
         Ok(results)
     }
 
+    /// Returns a privacy-minimal revocation result even when the full issuer
+    /// record no longer exists.
+    pub fn get_issuer_revocation_tombstone(
+        env: Env,
+        issuer_id_hash: BytesN<32>,
+    ) -> IssuerRevocationResult {
+        let tombstone_key = DataKey::RevocationTombstone(issuer_id_hash.clone());
+        if let Some(tombstone) = env
+            .storage()
+            .persistent()
+            .get::<_, IssuerRevocationTombstone>(&tombstone_key)
+        {
+            Self::extend_tombstone_ttl(env, &tombstone_key);
+            return IssuerRevocationResult {
+                issuer_id_hash,
+                state: IssuerRevocationState::Revoked,
+                version: tombstone.version,
+                revoked_at: tombstone.revoked_at,
+                revoked_ledger: tombstone.revoked_ledger,
+            };
+        }
+        let state = if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Issuer(issuer_id_hash.clone()))
+        {
+            IssuerRevocationState::NotRevoked
+        } else {
+            IssuerRevocationState::Unknown
+        };
+        IssuerRevocationResult {
+            issuer_id_hash,
+            state,
+            version: 0,
+            revoked_at: 0,
+            revoked_ledger: 0,
+        }
+    }
+
+    /// Bounded revocation lookup preserving input order and duplicates.
+    pub fn get_issuer_revocation_statuses(
+        env: Env,
+        issuer_id_hashes: Vec<BytesN<32>>,
+    ) -> Result<Vec<IssuerRevocationResult>, IssuerError> {
+        if issuer_id_hashes.len() > MAX_ISSUER_STATUS_BATCH {
+            return Err(IssuerError::BatchTooLarge);
+        }
+        let mut results = Vec::new(&env);
+        for issuer_id_hash in issuer_id_hashes.iter() {
+            results.push_back(Self::get_issuer_revocation_tombstone(
+                env.clone(),
+                issuer_id_hash,
+            ));
+        }
+        Ok(results)
+    }
+
+    pub fn keepalive_revocation_tombstone(env: Env, issuer_id_hash: BytesN<32>) -> bool {
+        let key = DataKey::RevocationTombstone(issuer_id_hash);
+        if !env.storage().persistent().has(&key) {
+            return false;
+        }
+        Self::extend_tombstone_ttl(env, &key);
+        true
+    }
+
     pub fn is_active_address(env: Env, issuer_address: Address) -> bool {
         let issuer_id_hash: Option<BytesN<32>> = env
             .storage()
@@ -2192,8 +2274,12 @@ impl IssuerRegistryContract {
             .ok_or(IssuerError::IssuerNotFound)?;
 
         let previous = record.status.clone();
-        if previous == IssuerStatus::Revoked && status != IssuerStatus::Revoked {
-            return Err(IssuerError::InvalidTransition);
+        if previous == IssuerStatus::Revoked {
+            return if status == IssuerStatus::Revoked {
+                Err(IssuerError::IssuerRevoked)
+            } else {
+                Err(IssuerError::InvalidTransition)
+            };
         }
 
         // The new status and the ledger metadata marking when it became
@@ -2238,6 +2324,15 @@ impl IssuerRegistryContract {
                 if previous == IssuerStatus::Active {
                     Self::release_active_capacity(&env);
                 }
+                let tombstone_key = DataKey::RevocationTombstone(issuer_id_hash.clone());
+                let tombstone = IssuerRevocationTombstone {
+                    version: ISSUER_REVOCATION_TOMBSTONE_VERSION,
+                    issuer_id_hash: issuer_id_hash.clone(),
+                    revoked_at: now,
+                    revoked_ledger: effective_ledger,
+                };
+                env.storage().persistent().set(&tombstone_key, &tombstone);
+                Self::extend_tombstone_ttl(env.clone(), &tombstone_key);
             }
         }
 
@@ -2395,6 +2490,12 @@ impl IssuerRegistryContract {
         }
     }
 
+    fn extend_tombstone_ttl(env: Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    }
+
     fn extend_address_ttl(env: Env, issuer_address: Address) {
         let tracker = DataKey::AddressTtl(issuer_address.clone());
         let live_until = Self::tracked_live_until(&env);
@@ -2449,6 +2550,8 @@ mod test {
     use earnproof_shared::{
         AdminTransferState, ContractError, IssuerError, IssuerQueryStatus, IssuerStatus,
         IssuerStatusResult, ADMIN_TRANSFER_EXPIRY_LEDGERS, MAX_ISSUER_STATUS_BATCH,
+        ContractError, IssuerError, IssuerQueryStatus, IssuerRevocationState, IssuerStatus,
+        IssuerStatusResult, ISSUER_REVOCATION_TOMBSTONE_VERSION, MAX_ISSUER_STATUS_BATCH,
         TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
@@ -2592,6 +2695,107 @@ mod test {
 
         let result = client.try_reactivate_issuer(&bytes(&env, 0x91), &issuer_id, &reason);
         assert_eq!(result, Err(Ok(IssuerError::InvalidTransition)));
+    }
+
+    #[test]
+    fn revocation_tombstone_is_minimal_stable_and_blocks_identifier_reuse() {
+        let (env, client, _admin) = setup();
+        env.ledger().set_sequence_number(77);
+        env.ledger().set_timestamp(1_234);
+        let issuer_id = bytes(&env, 0x41);
+        let issuer_address = Address::from_str(&env, ISSUER_ONE);
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 0x42),
+            &bytes(&env, 0x43),
+        );
+        client.revoke_issuer(&bytes(&env, 0x44), &issuer_id, &bytes(&env, 0x45));
+
+        let result = client.get_issuer_revocation_tombstone(&issuer_id);
+        assert_eq!(result.state, IssuerRevocationState::Revoked);
+        assert_eq!(result.version, ISSUER_REVOCATION_TOMBSTONE_VERSION);
+        assert_eq!(result.issuer_id_hash, issuer_id);
+        assert_eq!(result.revoked_at, 1_234);
+        assert_eq!(result.revoked_ledger, 77);
+
+        env.ledger().set_sequence_number(78);
+        env.ledger().set_timestamp(1_235);
+        assert_eq!(
+            client.try_revoke_issuer(&bytes(&env, 0x46), &issuer_id, &bytes(&env, 0x47)),
+            Err(Ok(IssuerError::IssuerRevoked))
+        );
+        assert_eq!(client.get_issuer_revocation_tombstone(&issuer_id), result);
+
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Issuer(issuer_id.clone()));
+        });
+        assert_eq!(
+            client.try_register_issuer(
+                &issuer_id,
+                &Address::from_str(&env, ISSUER_TWO),
+                &bytes(&env, 0x48),
+                &bytes(&env, 0x49),
+            ),
+            Err(Ok(IssuerError::IssuerRevoked))
+        );
+    }
+
+    #[test]
+    fn revocation_status_queries_are_bounded_ordered_and_unambiguous() {
+        let (env, client, _admin) = setup();
+        let active = bytes(&env, 0x51);
+        let revoked = bytes(&env, 0x52);
+        let unknown = bytes(&env, 0x53);
+        client.register_issuer(
+            &active,
+            &Address::from_str(&env, ISSUER_ONE),
+            &bytes(&env, 0x54),
+            &bytes(&env, 0x55),
+        );
+        client.register_issuer(
+            &revoked,
+            &Address::from_str(&env, ISSUER_TWO),
+            &bytes(&env, 0x56),
+            &bytes(&env, 0x57),
+        );
+        client.revoke_issuer(&bytes(&env, 0x58), &revoked, &bytes(&env, 0x59));
+
+        let request = vec![
+            &env,
+            unknown.clone(),
+            revoked.clone(),
+            active.clone(),
+            revoked,
+        ];
+        let results = client.get_issuer_revocation_statuses(&request);
+        assert_eq!(
+            results.get(0).unwrap().state,
+            IssuerRevocationState::Unknown
+        );
+        assert_eq!(
+            results.get(1).unwrap().state,
+            IssuerRevocationState::Revoked
+        );
+        assert_eq!(
+            results.get(2).unwrap().state,
+            IssuerRevocationState::NotRevoked
+        );
+        assert_eq!(
+            results.get(3).unwrap().state,
+            IssuerRevocationState::Revoked
+        );
+
+        let mut oversized = Vec::new(&env);
+        for index in 0..=MAX_ISSUER_STATUS_BATCH {
+            oversized.push_back(BytesN::from_array(&env, &[index as u8; 32]));
+        }
+        assert_eq!(
+            client.try_get_issuer_revocation_statuses(&oversized),
+            Err(Ok(IssuerError::BatchTooLarge))
+        );
     }
 
     #[test]
