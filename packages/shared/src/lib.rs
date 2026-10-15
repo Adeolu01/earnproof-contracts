@@ -255,31 +255,33 @@ pub struct SchemaPolicyDigest {
     pub digest: BytesN<32>,
 }
 
+/// Inputs committed by the version-1 schema-policy digest.
+pub struct SchemaPolicyDigestInput<'a> {
+    pub schema_version: u32,
+    pub config_version: u32,
+    pub approved: bool,
+    pub lifecycle: &'a SchemaLifecyclePolicy,
+    pub policy: &'a SchemaPolicy,
+    pub payload_limit: u32,
+    pub rate_limit: &'a SchemaRateLimit,
+}
+
 /// Hashes the canonical version-1 schema-policy tuple. Field order is part of
 /// the public encoding and must only change under a new digest version.
-pub fn compute_schema_policy_digest(
-    env: &Env,
-    schema_version: u32,
-    config_version: u32,
-    approved: bool,
-    lifecycle: &SchemaLifecyclePolicy,
-    policy: &SchemaPolicy,
-    payload_limit: u32,
-    rate_limit: &SchemaRateLimit,
-) -> BytesN<32> {
+pub fn compute_schema_policy_digest(env: &Env, input: &SchemaPolicyDigestInput<'_>) -> BytesN<32> {
     let payload = (
         SCHEMA_POLICY_DIGEST_VERSION,
         Symbol::new(env, "earnproof_schema_policy"),
-        schema_version,
-        config_version,
-        approved,
-        lifecycle.activated_at,
-        lifecycle.deprecated_at,
-        policy.proof_types.clone(),
-        policy.max_validity_seconds,
-        payload_limit,
-        rate_limit.max_registrations,
-        rate_limit.window_ledgers,
+        input.schema_version,
+        input.config_version,
+        input.approved,
+        input.lifecycle.activated_at,
+        input.lifecycle.deprecated_at,
+        input.policy.proof_types.clone(),
+        input.policy.max_validity_seconds,
+        input.payload_limit,
+        input.rate_limit.max_registrations,
+        input.rate_limit.window_ledgers,
     )
         .to_xdr(env);
     env.crypto().sha256(&payload).to_bytes()

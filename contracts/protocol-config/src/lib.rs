@@ -1325,13 +1325,15 @@ impl ProtocolConfigContract {
         let config_version = Self::get_config_version(env.clone());
         let digest = earnproof_shared::compute_schema_policy_digest(
             &env,
-            version,
-            config_version,
-            approved,
-            &lifecycle,
-            &policy,
-            payload_limit,
-            &rate_limit,
+            &earnproof_shared::SchemaPolicyDigestInput {
+                schema_version: version,
+                config_version,
+                approved,
+                lifecycle: &lifecycle,
+                policy: &policy,
+                payload_limit,
+                rate_limit: &rate_limit,
+            },
         );
         Ok(SchemaPolicyDigest {
             digest_version: earnproof_shared::SCHEMA_POLICY_DIGEST_VERSION,
