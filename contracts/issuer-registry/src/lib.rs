@@ -5,14 +5,12 @@ use earnproof_shared::{
     IssuerAssuranceLevelCommitment, IssuerError, IssuerPolicyCommitments, IssuerQueryStatus,
     IssuerRecord, IssuerStatus, IssuerStatusResult, MigrationStatus, RotationRecord,
     SigningKeyCommitment, SigningKeyLifecycleRecord, SigningKeyLifecycleTransition, TtlStatus,
-    UpgradeApproval, UpgradeReceipt,
-    ISSUER_ASSURANCE_COMMITMENT_VERSION, ISSUER_ASSURANCE_HISTORY_CAPACITY,
-    ISSUER_REGISTRY_INTERFACE_VERSION, MAX_ISSUER_ASSURANCE_HISTORY_PAGE,
-    MAX_ISSUER_ASSURANCE_LEVEL, MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH,
-    MAX_SIGNING_KEY_LIFECYCLE_PAGE,
-    METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS,
+    UpgradeApproval, UpgradeReceipt, ISSUER_ASSURANCE_COMMITMENT_VERSION,
+    ISSUER_ASSURANCE_HISTORY_CAPACITY, ISSUER_REGISTRY_INTERFACE_VERSION,
+    MAX_ISSUER_ASSURANCE_HISTORY_PAGE, MAX_ISSUER_ASSURANCE_LEVEL, MAX_ISSUER_STATUS_BATCH,
+    MAX_MIGRATION_BATCH, MAX_SIGNING_KEY_LIFECYCLE_PAGE, METADATA_REVISION_INITIAL,
+    MIGRATION_STATUS_VERSION, SIGNING_KEY_LIFECYCLE_HISTORY_CAPACITY, TTL_EXTEND_TO_LEDGERS,
     TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
-    SIGNING_KEY_LIFECYCLE_HISTORY_CAPACITY,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec};
 
@@ -2205,7 +2203,7 @@ impl IssuerRegistryContract {
             Self::get_signing_key_usage_sequence(env, issuer_id),
             steps,
         )
-            .ok_or(IssuerError::SequenceOverflow)
+        .ok_or(IssuerError::SequenceOverflow)
     }
 
     fn store_signing_key_sequence(env: Env, issuer_id: BytesN<32>, sequence: u64) {

@@ -126,5 +126,11 @@ fn pending_activation_cannot_be_used_as_a_replacement() {
 
     env.ledger().set_timestamp(1_100);
     client.deprecate_schema_to(&1, &4, &SchemaCompatibility::BackwardCompatible);
-    assert_eq!(client.get_schema_replacement(&1).unwrap().replacement_version, 4);
+    assert_eq!(
+        client
+            .get_schema_replacement(&1)
+            .unwrap()
+            .replacement_version,
+        4
+    );
 }

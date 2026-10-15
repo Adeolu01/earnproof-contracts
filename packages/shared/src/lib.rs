@@ -862,12 +862,8 @@ impl CriticalAction {
             Self::SchemaDeprecation(_) => CriticalActionCategory::SchemaDeprecation,
             Self::SchemaReplacement(_, _, _) => CriticalActionCategory::SchemaReplacement,
             Self::SchemaPayloadLimit(_, _) => CriticalActionCategory::SchemaPayloadLimit,
-            Self::IssuerRegistryReplacement(_) => {
-                CriticalActionCategory::IssuerRegistryReplacement
-            }
-            Self::ProtocolConfigReplacement(_) => {
-                CriticalActionCategory::ProtocolConfigReplacement
-            }
+            Self::IssuerRegistryReplacement(_) => CriticalActionCategory::IssuerRegistryReplacement,
+            Self::ProtocolConfigReplacement(_) => CriticalActionCategory::ProtocolConfigReplacement,
             Self::ApprovalPolicyUpdate(_) => CriticalActionCategory::ApprovalPolicyUpdate,
         }
     }
@@ -1869,7 +1865,10 @@ mod signing_key_sequence_tests {
     #[test]
     fn sequence_advancement_rejects_overflow_atomically() {
         assert_eq!(checked_signing_key_sequence(0, 1), Some(1));
-        assert_eq!(checked_signing_key_sequence(u64::MAX - 1, 1), Some(u64::MAX));
+        assert_eq!(
+            checked_signing_key_sequence(u64::MAX - 1, 1),
+            Some(u64::MAX)
+        );
         assert_eq!(checked_signing_key_sequence(u64::MAX - 1, 2), None);
         assert_eq!(checked_signing_key_sequence(u64::MAX, 1), None);
     }

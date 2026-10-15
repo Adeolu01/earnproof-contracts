@@ -4,13 +4,11 @@ use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
     CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
     SchemaActivationNotice, SchemaActivationState, SchemaCompatibility, SchemaPolicy,
-    SchemaReplacementPointer, LEGACY_COMMITMENT_ALGORITHM,
-    LEGACY_PROOF_TYPE,
-    CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
+    SchemaReplacementPointer, CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS,
+    DEFAULT_SCHEMA_PAYLOAD_LIMIT, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
     MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
     MAX_SCHEMA_ACTIVATION_NOTICE_SECONDS, MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES,
-    MAX_SCHEMA_VALIDITY_SECONDS,
-    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
+    MAX_SCHEMA_VALIDITY_SECONDS, MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
     SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
@@ -587,11 +585,7 @@ impl ProtocolConfigContract {
         Self::ensure_nonzero_version(version)?;
         let proposed_at = env.ledger().timestamp();
         let minimum_notice_seconds = Self::get_min_schema_activation_notice(env.clone());
-        Self::validate_schema_activation_time(
-            proposed_at,
-            proposed_at,
-            minimum_notice_seconds,
-        )?;
+        Self::validate_schema_activation_time(proposed_at, proposed_at, minimum_notice_seconds)?;
         if env
             .storage()
             .persistent()
@@ -606,7 +600,9 @@ impl ProtocolConfigContract {
 
         let existing = Self::stored_predecessor(env.clone(), version);
         if existing.is_some_and(|stored| stored != predecessor)
-            || (existing.is_none() && predecessor != 0 && Self::schema_version_exists(env.clone(), version))
+            || (existing.is_none()
+                && predecessor != 0
+                && Self::schema_version_exists(env.clone(), version))
         {
             return Err(ContractError::InvalidState);
         }
@@ -631,9 +627,11 @@ impl ProtocolConfigContract {
         if predecessor != 0 {
             let key = DataKey::SchemaPredecessor(version);
             env.storage().persistent().set(&key, &predecessor);
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
             SchemaPredecessorSet {
                 version,
                 predecessor,
@@ -743,16 +741,15 @@ impl ProtocolConfigContract {
             .unwrap_or(0)
     }
 
-    pub fn get_schema_activation_notice(
-        env: Env,
-        version: u32,
-    ) -> Option<SchemaActivationNotice> {
+    pub fn get_schema_activation_notice(env: Env, version: u32) -> Option<SchemaActivationNotice> {
         let key = DataKey::SchemaActivation(version);
         let notice = env.storage().persistent().get(&key);
         if notice.is_some() {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
         }
         notice
     }
@@ -879,7 +876,10 @@ impl ProtocolConfigContract {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_nonzero_version(version)?;
-        if env.storage().persistent().has(&DataKey::SchemaVersion(version))
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::SchemaVersion(version))
             || proof_types.is_empty()
             || proof_types.len() > MAX_SCHEMA_PROOF_TYPES
             || max_validity_seconds == 0
@@ -1613,9 +1613,11 @@ impl ProtocolConfigContract {
         let key = DataKey::SchemaPredecessor(version);
         let predecessor = env.storage().persistent().get(&key);
         if predecessor.is_some() {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
         }
         predecessor
     }
@@ -1624,9 +1626,11 @@ impl ProtocolConfigContract {
         let key = DataKey::SchemaReplacement(version);
         let pointer = env.storage().persistent().get(&key);
         if pointer.is_some() {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
         }
         pointer
     }
@@ -1671,11 +1675,7 @@ impl ProtocolConfigContract {
         if env.storage().persistent().has(&pointer_key) {
             return Err(ContractError::AlreadyExists);
         }
-        if Self::replacement_reaches(
-            env.clone(),
-            replacement_version,
-            deprecated_version,
-        )? {
+        if Self::replacement_reaches(env.clone(), replacement_version, deprecated_version)? {
             return Err(ContractError::InvalidState);
         }
 
@@ -1717,7 +1717,11 @@ impl ProtocolConfigContract {
     }
 
     fn schema_version_exists(env: Env, version: u32) -> bool {
-        version != 0 && env.storage().persistent().has(&DataKey::SchemaVersion(version))
+        version != 0
+            && env
+                .storage()
+                .persistent()
+                .has(&DataKey::SchemaVersion(version))
     }
 
     fn lineage_reaches(env: Env, start: u32, target: u32) -> bool {
@@ -1787,11 +1791,7 @@ impl ProtocolConfigContract {
         }
         let proposed_at = env.ledger().timestamp();
         let minimum_notice_seconds = Self::get_min_schema_activation_notice(env.clone());
-        Self::validate_schema_activation_time(
-            proposed_at,
-            activates_at,
-            minimum_notice_seconds,
-        )?;
+        Self::validate_schema_activation_time(proposed_at, activates_at, minimum_notice_seconds)?;
 
         env.storage()
             .persistent()
