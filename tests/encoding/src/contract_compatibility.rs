@@ -17,8 +17,8 @@ use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{Address, BytesN, Env, Symbol, TryFromVal, Val};
 
 use earnproof_shared::{
-    compute_schema_policy_digest, SchemaLifecyclePolicy, SchemaPolicy, SchemaRateLimit,
-    UpgradeCompatibilityAttestation, SCHEMA_POLICY_DIGEST_VERSION,
+    compute_schema_policy_digest, SchemaLifecyclePolicy, SchemaPolicy, SchemaPolicyDigestInput,
+    SchemaRateLimit, UpgradeCompatibilityAttestation, SCHEMA_POLICY_DIGEST_VERSION,
 };
 use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
 use proof_registry::{ProofRegistryContract, ProofRegistryContractClient};
@@ -74,7 +74,18 @@ fn schema_policy_digest_matches_the_documented_canonical_xdr_tuple() {
     )
         .to_xdr(&env);
     assert_eq!(
-        compute_schema_policy_digest(&env, 7, 9, true, &lifecycle, &policy, 2_048, &rate),
+        compute_schema_policy_digest(
+            &env,
+            &SchemaPolicyDigestInput {
+                schema_version: 7,
+                config_version: 9,
+                approved: true,
+                lifecycle: &lifecycle,
+                policy: &policy,
+                payload_limit: 2_048,
+                rate_limit: &rate,
+            },
+        ),
         env.crypto().sha256(&expected_payload).to_bytes()
     );
 }
