@@ -405,6 +405,22 @@ impl IssuerRegistryContract {
             .get(&DataKey::GovernanceAssignment(role, address))
     }
 
+    pub fn governance_role_state(
+        env: Env,
+        role: GovernanceRole,
+        address: Address,
+    ) -> GovernanceRoleState {
+        let Some(assignment) = Self::get_governance_assignment(env.clone(), role, address) else {
+            return GovernanceRoleState::Missing;
+        };
+        let ledger = env.ledger().sequence();
+        if assignment.is_pending_at(ledger) {
+            GovernanceRoleState::Pending
+        } else if assignment.is_active_at(ledger) {
+            GovernanceRoleState::Active
+        } else {
+            GovernanceRoleState::Expired
+        }
     pub fn get_governance_assignment_state(
         env: Env,
         role: GovernanceRole,
@@ -2990,6 +3006,8 @@ mod test {
 
     use super::{DataKey, IssuerRegistryContract, IssuerRegistryContractClient};
     use earnproof_shared::{
+        ContractError, GovernanceRole, GovernanceRoleState, IssuerError, IssuerQueryStatus,
+        IssuerStatus, IssuerStatusResult, MAX_ISSUER_STATUS_BATCH, TTL_THRESHOLD_LEDGERS,
         AdminTransferState, ContractError, IssuerError, IssuerQueryStatus, IssuerStatus,
         IssuerStatusResult, ADMIN_TRANSFER_EXPIRY_LEDGERS, MAX_ISSUER_STATUS_BATCH,
         ContractError, IssuerError, IssuerQueryStatus, IssuerRevocationState, IssuerStatus,
@@ -4759,6 +4777,10 @@ mod test {
             .unwrap();
         assert!(assignment.is_active_at(activation));
         assert!(!assignment.is_pending_at(activation));
+        assert_eq!(
+            client.governance_role_state(&GovernanceRole::IssuerManagement, &delegate),
+            GovernanceRoleState::Active
+        );
         client.suspend_issuer_by_role(&bytes(&env, 0x38), &issuer_id, &bytes(&env, 1), &delegate);
 
         let second_id = bytes(&env, 0x39);
@@ -4771,6 +4793,10 @@ mod test {
         );
         env.ledger()
             .with_mut(|ledger| ledger.sequence_number = expiration);
+        assert_eq!(
+            client.governance_role_state(&GovernanceRole::IssuerManagement, &delegate),
+            GovernanceRoleState::Expired
+        );
         assert_eq!(
             client.try_suspend_issuer_by_role(
                 &bytes(&env, 0x3A),

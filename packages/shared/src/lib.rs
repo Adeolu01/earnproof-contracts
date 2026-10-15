@@ -565,6 +565,16 @@ impl GovernanceRoleAssignment {
     }
 }
 
+/// Explicit ledger-relative state of a governance role assignment.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceRoleState {
+    Missing,
+    Pending,
+    Active,
+    Expired,
+}
+
 /// Derives a network- and contract-scoped key for one-time governance
 /// proposal execution tracking.
 pub fn proposal_domain_key(
@@ -1038,6 +1048,7 @@ pub enum ConfigChangeCategory {
     SchemaRateLimit,
     CommitmentAlgorithmPolicy,
     ApprovalPolicyUpdate,
+    EmergencyPolicyUpdate,
     DisputeFilingPolicy,
     NullifierDomainPolicy,
 }
@@ -1054,6 +1065,7 @@ pub enum CriticalActionCategory {
     IssuerRegistryReplacement,
     ProtocolConfigReplacement,
     ApprovalPolicyUpdate,
+    EmergencyPolicyUpdate,
 }
 
 /// Canonical parameters for a threshold-governed protocol action.
@@ -1068,6 +1080,7 @@ pub enum CriticalAction {
     IssuerRegistryReplacement(Address),
     ProtocolConfigReplacement(Address),
     ApprovalPolicyUpdate(CriticalActionPolicy),
+    EmergencyPolicyUpdate(EmergencyFastTrackPolicy),
 }
 
 impl CriticalAction {
@@ -1081,6 +1094,7 @@ impl CriticalAction {
             Self::IssuerRegistryReplacement(_) => CriticalActionCategory::IssuerRegistryReplacement,
             Self::ProtocolConfigReplacement(_) => CriticalActionCategory::ProtocolConfigReplacement,
             Self::ApprovalPolicyUpdate(_) => CriticalActionCategory::ApprovalPolicyUpdate,
+            Self::EmergencyPolicyUpdate(_) => CriticalActionCategory::EmergencyPolicyUpdate,
         }
     }
 }
@@ -1147,6 +1161,133 @@ pub struct CriticalActionProposal {
     pub created_at: u32,
     pub expires_at: u32,
 }
+
+/// Encoding version for governance action commitments that are separated by
+/// network, contract, and action category.
+pub const GOVERNANCE_ACTION_HASH_VERSION: u32 = 1;
+
+/// Public metadata proving which domain was bound into a proposal identifier.
+/// This is stored beside (rather than inside) the original proposal record so
+/// proposals created by older contract versions remain decodable.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceActionDomain {
+    pub encoding_version: u32,
+    pub network_id: BytesN<32>,
+    pub contract_id: Address,
+    pub action_category: CriticalActionCategory,
+    pub nonce: u32,
+    pub commitment: BytesN<32>,
+}
+
+/// Computes the canonical V1 identifier for a critical governance action.
+/// Soroban XDR supplies unambiguous length and variant framing for every field.
+pub fn governance_action_commitment(
+    env: &Env,
+    contract_id: &Address,
+    action: &CriticalAction,
+    nonce: u32,
+) -> BytesN<32> {
+    let preimage = (
+        Symbol::new(env, "gov_action"),
+        GOVERNANCE_ACTION_HASH_VERSION,
+        env.ledger().network_id(),
+        contract_id.clone(),
+        action.category(),
+        action.clone(),
+        nonce,
+    );
+    env.crypto().sha256(&preimage.to_xdr(env)).to_bytes()
+}
+
+/// Encoding version for approval-policy snapshots attached to proposals.
+pub const GOVERNANCE_APPROVAL_SNAPSHOT_VERSION: u32 = 1;
+
+/// Immutable policy metadata captured when a governance proposal is created.
+/// The proposal retains the full policy while this compact record gives
+/// clients a stable version and signer-set commitment to index.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceApprovalSnapshot {
+    pub snapshot_version: u32,
+    pub policy_version: u32,
+    pub threshold: u32,
+    pub signer_set_digest: BytesN<32>,
+}
+
+/// Commits to the exact, ordered signer vector used by a governance policy.
+/// Signer ordering is part of the canonical policy encoding.
+pub fn governance_signer_set_digest(env: &Env, signers: &Vec<Address>) -> BytesN<32> {
+    let preimage = (
+        Symbol::new(env, "gov_signers"),
+        GOVERNANCE_APPROVAL_SNAPSHOT_VERSION,
+        signers.clone(),
+    );
+    env.crypto().sha256(&preimage.to_xdr(env)).to_bytes()
+}
+
+/// Why an address can or cannot approve a pending critical action.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceApprovalEligibility {
+    Eligible,
+    ProposalNotFound,
+    ProposalExpired,
+    AlreadyApproved,
+    NotInProposalSnapshot,
+    CurrentPolicyDisabled,
+    RemovedFromCurrentPolicy,
+    ReassignedAfterSnapshot,
+}
+
+/// The complete allow-list of actions that may bypass normal governance
+/// timing. Deliberately excludes unpause, upgrades, and arbitrary calls.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum EmergencyAction {
+    GlobalPause,
+    ScopedPause(PauseScope),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceApproverVersion {
+    pub address: Address,
+    pub assignment_version: u32,
+}
+
+/// Assignment generations captured for every signer in a proposal policy.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceApproverSnapshot {
+    pub encoding_version: u32,
+    pub approvers: Vec<GovernanceApproverVersion>,
+}
+
+pub const GOVERNANCE_APPROVER_SNAPSHOT_VERSION: u32 = 1;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyFastTrackPolicy {
+    pub enabled: bool,
+    pub threshold: u32,
+    pub guardians: Vec<Address>,
+    pub max_lifetime_ledgers: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyActionProposal {
+    pub action: EmergencyAction,
+    pub reason_commitment: BytesN<32>,
+    pub policy: EmergencyFastTrackPolicy,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub created_at: u32,
+    pub expires_at: u32,
+}
+
+pub const EMERGENCY_FAST_TRACK_ENCODING_VERSION: u32 = 1;
 
 /// One bounded, on-chain summary of a governance change, as stored in the
 /// change-history ring.
