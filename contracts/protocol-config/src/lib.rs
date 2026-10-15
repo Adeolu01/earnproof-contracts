@@ -3,7 +3,8 @@
 use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
     CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
-    SchemaPolicy, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
+    SchemaCompatibility, SchemaPolicy, SchemaReplacementPointer, LEGACY_COMMITMENT_ALGORITHM,
+    LEGACY_PROOF_TYPE,
     CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
     MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
     MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
@@ -27,6 +28,7 @@ enum DataKey {
     ConfigVersion,
     SchemaVersion(u32),
     SchemaPredecessor(u32),
+    SchemaReplacement(u32),
     SchemaPolicy(u32),
     CommitmentAlgorithm(u32),
     ProofTypeApproved(BytesN<32>),
@@ -101,6 +103,14 @@ pub struct SchemaApproved {
 #[contractevent]
 pub struct SchemaDeprecated {
     pub version: u32,
+}
+
+#[contractevent]
+pub struct SchemaReplacementSet {
+    pub deprecated_version: u32,
+    pub replacement_version: u32,
+    pub compatibility: SchemaCompatibility,
+    pub effective_ledger: u32,
 }
 
 #[contractevent]
@@ -660,6 +670,58 @@ impl ProtocolConfigContract {
         Ok(())
     }
 
+    /// Atomically deprecates a schema and records its approved successor.
+    pub fn deprecate_schema_to(
+        env: Env,
+        deprecated_version: u32,
+        replacement_version: u32,
+        compatibility: SchemaCompatibility,
+    ) -> Result<SchemaReplacementPointer, ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_critical_action_policy_disabled(&env)?;
+        let commitment = Self::commit(
+            &env,
+            (deprecated_version, replacement_version, compatibility),
+        );
+        Self::apply_schema_replacement(
+            env,
+            deprecated_version,
+            replacement_version,
+            compatibility,
+            commitment,
+        )
+    }
+
+    pub fn get_schema_replacement(
+        env: Env,
+        deprecated_version: u32,
+    ) -> Option<SchemaReplacementPointer> {
+        Self::stored_schema_replacement(env, deprecated_version)
+    }
+
+    /// Returns the source followed by each retained successor, bounded by the
+    /// same maximum depth used by cycle detection.
+    pub fn get_schema_replacement_chain(env: Env, version: u32) -> Vec<u32> {
+        let mut chain = Vec::new(&env);
+        if version == 0 {
+            return chain;
+        }
+        let mut current = version;
+        for _ in 0..=MAX_SCHEMA_LINEAGE_DEPTH {
+            if chain.contains(&current) {
+                break;
+            }
+            chain.push_back(current);
+            match Self::stored_schema_replacement(env.clone(), current) {
+                Some(pointer) => current = pointer.replacement_version,
+                None => break,
+            }
+        }
+        chain
+    }
+
     pub fn is_schema_version_approved(env: Env, version: u32) -> bool {
         if version == 0 {
             return false;
@@ -858,6 +920,7 @@ impl ProtocolConfigContract {
             &action,
             CriticalAction::SchemaApproval(_)
                 | CriticalAction::SchemaDeprecation(_)
+                | CriticalAction::SchemaReplacement(_, _, _)
                 | CriticalAction::SchemaPayloadLimit(_, _)
                 | CriticalAction::ApprovalPolicyUpdate(_)
         ) {
@@ -999,6 +1062,19 @@ impl ProtocolConfigContract {
                     commitment,
                 );
                 SchemaDeprecated { version }.publish(&env);
+            }
+            CriticalAction::SchemaReplacement(
+                deprecated_version,
+                replacement_version,
+                compatibility,
+            ) => {
+                Self::apply_schema_replacement(
+                    env.clone(),
+                    deprecated_version,
+                    replacement_version,
+                    compatibility,
+                    commitment,
+                )?;
             }
             CriticalAction::SchemaPayloadLimit(version, max_size) => {
                 Self::ensure_nonzero_version(version)?;
@@ -1406,6 +1482,110 @@ impl ProtocolConfigContract {
                 .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
         }
         predecessor
+    }
+
+    fn stored_schema_replacement(env: Env, version: u32) -> Option<SchemaReplacementPointer> {
+        let key = DataKey::SchemaReplacement(version);
+        let pointer = env.storage().persistent().get(&key);
+        if pointer.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        }
+        pointer
+    }
+
+    fn replacement_reaches(env: Env, start: u32, target: u32) -> Result<bool, ContractError> {
+        let mut current = start;
+        let mut visited = Vec::new(&env);
+        for _ in 0..MAX_SCHEMA_LINEAGE_DEPTH {
+            if current == target {
+                return Ok(true);
+            }
+            if visited.contains(&current) {
+                return Err(ContractError::InvalidState);
+            }
+            visited.push_back(current);
+            match Self::stored_schema_replacement(env.clone(), current) {
+                Some(pointer) => current = pointer.replacement_version,
+                None => return Ok(false),
+            }
+        }
+        Err(ContractError::InvalidState)
+    }
+
+    fn apply_schema_replacement(
+        env: Env,
+        deprecated_version: u32,
+        replacement_version: u32,
+        compatibility: SchemaCompatibility,
+        change_commitment: BytesN<32>,
+    ) -> Result<SchemaReplacementPointer, ContractError> {
+        Self::ensure_nonzero_version(deprecated_version)?;
+        Self::ensure_nonzero_version(replacement_version)?;
+        if deprecated_version == replacement_version {
+            return Err(ContractError::InvalidInput);
+        }
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::SchemaVersion(deprecated_version))
+            != Some(true)
+            || env
+                .storage()
+                .persistent()
+                .get::<_, bool>(&DataKey::SchemaVersion(replacement_version))
+                != Some(true)
+        {
+            return Err(ContractError::InvalidState);
+        }
+        let pointer_key = DataKey::SchemaReplacement(deprecated_version);
+        if env.storage().persistent().has(&pointer_key) {
+            return Err(ContractError::AlreadyExists);
+        }
+        if Self::replacement_reaches(
+            env.clone(),
+            replacement_version,
+            deprecated_version,
+        )? {
+            return Err(ContractError::InvalidState);
+        }
+
+        let pointer = SchemaReplacementPointer {
+            pointer_version: 1,
+            deprecated_version,
+            replacement_version,
+            compatibility,
+            effective_ledger: env.ledger().sequence(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersion(deprecated_version), &false);
+        env.storage().persistent().set(&pointer_key, &pointer);
+        Self::extend_schema_ttl(env.clone(), deprecated_version);
+        env.storage().persistent().extend_ttl(
+            &pointer_key,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_TO_LEDGERS,
+        );
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::SchemaReplacement,
+            change_commitment,
+        );
+        SchemaDeprecated {
+            version: deprecated_version,
+        }
+        .publish(&env);
+        SchemaReplacementSet {
+            deprecated_version,
+            replacement_version,
+            compatibility,
+            effective_ledger: pointer.effective_ledger,
+        }
+        .publish(&env);
+        Ok(pointer)
     }
 
     fn schema_version_exists(env: Env, version: u32) -> bool {

@@ -376,7 +376,7 @@ impl InterfaceVersion {
 pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
 
 /// The interface version implemented by `protocol-config`.
-pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
+pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 2, 0);
 
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -815,6 +815,7 @@ pub enum ConfigChangeCategory {
     ScopedPause,
     SchemaApproval,
     SchemaDeprecation,
+    SchemaReplacement,
     SchemaPayloadLimit,
     SchemaPolicy,
     CommitmentAlgorithmPolicy,
@@ -827,6 +828,7 @@ pub enum ConfigChangeCategory {
 pub enum CriticalActionCategory {
     SchemaApproval,
     SchemaDeprecation,
+    SchemaReplacement,
     SchemaPayloadLimit,
     IssuerRegistryReplacement,
     ProtocolConfigReplacement,
@@ -839,6 +841,7 @@ pub enum CriticalActionCategory {
 pub enum CriticalAction {
     SchemaApproval(u32),
     SchemaDeprecation(u32),
+    SchemaReplacement(u32, u32, SchemaCompatibility),
     SchemaPayloadLimit(u32, u32),
     IssuerRegistryReplacement(Address),
     ProtocolConfigReplacement(Address),
@@ -850,6 +853,7 @@ impl CriticalAction {
         match self {
             Self::SchemaApproval(_) => CriticalActionCategory::SchemaApproval,
             Self::SchemaDeprecation(_) => CriticalActionCategory::SchemaDeprecation,
+            Self::SchemaReplacement(_, _, _) => CriticalActionCategory::SchemaReplacement,
             Self::SchemaPayloadLimit(_, _) => CriticalActionCategory::SchemaPayloadLimit,
             Self::IssuerRegistryReplacement(_) => {
                 CriticalActionCategory::IssuerRegistryReplacement
@@ -860,6 +864,26 @@ impl CriticalAction {
             Self::ApprovalPolicyUpdate(_) => CriticalActionCategory::ApprovalPolicyUpdate,
         }
     }
+}
+
+/// Compatibility guidance published with a schema replacement pointer.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SchemaCompatibility {
+    BackwardCompatible,
+    MigrationRequired,
+    Breaking,
+}
+
+/// Immutable, versioned pointer from a deprecated schema to its successor.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaReplacementPointer {
+    pub pointer_version: u32,
+    pub deprecated_version: u32,
+    pub replacement_version: u32,
+    pub compatibility: SchemaCompatibility,
+    pub effective_ledger: u32,
 }
 
 /// Optional multi-party approval policy for critical protocol actions.

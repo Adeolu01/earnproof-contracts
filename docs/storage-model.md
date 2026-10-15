@@ -60,6 +60,12 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 - `deprecate_schema_version(ver)`: extends on deprecation
 - `is_schema_version_approved(ver)`: extends on every read (extend-on-read pattern)
 
+`SchemaReplacement(version)` is an additive persistent sidecar written only by
+an atomic schema deprecation. It records the approved successor, public
+compatibility classification, pointer version, and exact effective ledger.
+Direct and bounded-chain queries extend its TTL. Legacy schemas have no entry,
+and existing proof records are never rewritten.
+
 ---
 
 ### Issuer Registry Contract
