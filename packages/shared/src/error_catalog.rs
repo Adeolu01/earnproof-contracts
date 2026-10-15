@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 59] = [
+pub const ERROR_CATALOG: [ErrorSpec; 60] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -563,6 +563,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 59] = [
         remediation: "Split the request into batches of at most MAX_ISSUER_STATUS_BATCH entries.",
         http_status: 400,
         client_message: "Request batch is too large",
+    },
+    ErrorSpec {
+        code: 214,
+        name: "SequenceOverflow",
+        enum_name: "IssuerError",
+        domain: Domain::IssuerRegistry,
+        status: Status::Returned,
+        cause: "A per-issuer signing-key lifecycle sequence cannot advance without overflowing.",
+        retry: Retry::AfterOperatorAction,
+        remediation: "Do not retry unchanged. Migrate the sequence representation before another key transition.",
+        http_status: 409,
+        client_message: "Signing-key sequence cannot advance",
     },
     ErrorSpec {
         code: 300,

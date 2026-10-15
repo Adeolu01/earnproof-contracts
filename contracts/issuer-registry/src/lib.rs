@@ -3,11 +3,13 @@
 use earnproof_shared::{
     ContractError, GenesisRecord, GovernanceRole, GovernanceRoleAssignment, InterfaceVersion,
     IssuerError, IssuerPolicyCommitments, IssuerQueryStatus, IssuerRecord, IssuerStatus,
-    IssuerStatusResult, MigrationStatus, RotationRecord, SigningKeyCommitment, TtlStatus,
-    UpgradeApproval, UpgradeReceipt,
-    ISSUER_REGISTRY_INTERFACE_VERSION, MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH,
+    IssuerStatusResult, MigrationStatus, RotationRecord, SigningKeyCommitment,
+    SigningKeyLifecycleRecord, SigningKeyLifecycleTransition, TtlStatus, UpgradeApproval,
+    UpgradeReceipt, ISSUER_REGISTRY_INTERFACE_VERSION, MAX_ISSUER_STATUS_BATCH,
+    MAX_MIGRATION_BATCH, MAX_SIGNING_KEY_LIFECYCLE_PAGE,
     METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS,
     TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
+    SIGNING_KEY_LIFECYCLE_HISTORY_CAPACITY,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec};
 
@@ -41,6 +43,9 @@ enum DataKey {
     PendingSigningKey(BytesN<32>),
     SigningKeyHistory(BytesN<32>, u32),
     SigningKeyHistoryCount(BytesN<32>),
+    SigningKeyUsageSequence(BytesN<32>),
+    SigningKeyLifecycleHistory(BytesN<32>, u32),
+    SigningKeyLifecycleState(BytesN<32>, BytesN<32>, u32),
     RotationHistory(BytesN<32>, u32),
     RotationCount(BytesN<32>),
     ExecutedProposal(BytesN<32>),
@@ -236,6 +241,16 @@ pub struct IssuerRotationNominated {
 pub struct IssuerRotationCancelled {
     pub issuer_id_hash: BytesN<32>,
     pub cancelled_by: Address,
+}
+
+#[contractevent]
+pub struct SigningKeyLifecycleChanged {
+    pub issuer_id: BytesN<32>,
+    pub key_hash: BytesN<32>,
+    pub algorithm: u32,
+    pub transition: SigningKeyLifecycleTransition,
+    pub sequence: u64,
+    pub effective_ledger: u32,
 }
 
 // ── capacity and cooldown governance events ─────────────────────────────────
@@ -844,14 +859,41 @@ impl IssuerRegistryContract {
             return Err(IssuerError::InvalidMetadataCommitment);
         }
         Self::get_issuer(env.clone(), issuer_id.clone())?;
-        env.storage().persistent().set(
-            &DataKey::PendingSigningKey(issuer_id),
-            &SigningKeyCommitment {
-                key_hash,
+        let pending_key = DataKey::PendingSigningKey(issuer_id.clone());
+        if env.storage().persistent().has(&pending_key)
+            || env
+                .storage()
+                .persistent()
+                .get::<_, SigningKeyCommitment>(&DataKey::ActiveSigningKey(issuer_id.clone()))
+                .map(|active| active.key_hash == key_hash && active.algorithm == algorithm)
+                .unwrap_or(false)
+            || Self::stored_signing_key_state(
+                env.clone(),
+                issuer_id.clone(),
+                key_hash.clone(),
                 algorithm,
-                activated_ledger: 0,
-            },
+            )
+            .map(|state| state.transition == SigningKeyLifecycleTransition::Compromised)
+            .unwrap_or(false)
+        {
+            return Err(IssuerError::InvalidTransition);
+        }
+        let sequence = Self::checked_signing_key_sequence(env.clone(), issuer_id.clone(), 1)?;
+        let commitment = SigningKeyCommitment {
+            key_hash: key_hash.clone(),
+            algorithm,
+            activated_ledger: 0,
+        };
+        env.storage().persistent().set(&pending_key, &commitment);
+        Self::append_signing_key_transition(
+            env.clone(),
+            issuer_id.clone(),
+            key_hash,
+            algorithm,
+            SigningKeyLifecycleTransition::Proposed,
+            sequence,
         );
+        Self::store_signing_key_sequence(env, issuer_id, sequence);
         Ok(())
     }
 
@@ -869,11 +911,15 @@ impl IssuerRegistryContract {
             .ok_or(IssuerError::InvalidTransition)?;
         next.activated_ledger = env.ledger().sequence();
         let active_key = DataKey::ActiveSigningKey(issuer_id.clone());
-        if let Some(previous) = env
+        let previous = env
             .storage()
             .persistent()
-            .get::<_, SigningKeyCommitment>(&active_key)
-        {
+            .get::<_, SigningKeyCommitment>(&active_key);
+        let steps = if previous.is_some() { 2 } else { 1 };
+        let final_sequence =
+            Self::checked_signing_key_sequence(env.clone(), issuer_id.clone(), steps)?;
+        let mut sequence = final_sequence - u64::from(steps) + 1;
+        if let Some(previous) = previous {
             let count: u32 = env
                 .storage()
                 .persistent()
@@ -889,9 +935,27 @@ impl IssuerRegistryContract {
                     &(count + 1),
                 );
             }
+            Self::append_signing_key_transition(
+                env.clone(),
+                issuer_id.clone(),
+                previous.key_hash,
+                previous.algorithm,
+                SigningKeyLifecycleTransition::Retired,
+                sequence,
+            );
+            sequence += 1;
         }
         env.storage().persistent().set(&active_key, &next);
         env.storage().persistent().remove(&pending_key);
+        Self::append_signing_key_transition(
+            env.clone(),
+            issuer_id.clone(),
+            next.key_hash,
+            next.algorithm,
+            SigningKeyLifecycleTransition::Activated,
+            sequence,
+        );
+        Self::store_signing_key_sequence(env, issuer_id, final_sequence);
         Ok(())
     }
 
@@ -923,6 +987,164 @@ impl IssuerRegistryContract {
             }
         }
         result
+    }
+
+    pub fn retire_issuer_signing_key(
+        env: Env,
+        issuer_id: BytesN<32>,
+    ) -> Result<SigningKeyLifecycleRecord, IssuerError> {
+        Self::assert_operational(&env);
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        Self::require_auth(&admin);
+        Self::get_issuer(env.clone(), issuer_id.clone())?;
+        let active_key = DataKey::ActiveSigningKey(issuer_id.clone());
+        let active: SigningKeyCommitment = env
+            .storage()
+            .persistent()
+            .get(&active_key)
+            .ok_or(IssuerError::InvalidTransition)?;
+        let sequence = Self::checked_signing_key_sequence(env.clone(), issuer_id.clone(), 1)?;
+        let count_key = DataKey::SigningKeyHistoryCount(issuer_id.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        if count < 4 {
+            env.storage().persistent().set(
+                &DataKey::SigningKeyHistory(issuer_id.clone(), count),
+                &active,
+            );
+            env.storage().persistent().set(&count_key, &(count + 1));
+        }
+        env.storage().persistent().remove(&active_key);
+        let record = Self::append_signing_key_transition(
+            env.clone(),
+            issuer_id.clone(),
+            active.key_hash,
+            active.algorithm,
+            SigningKeyLifecycleTransition::Retired,
+            sequence,
+        );
+        Self::store_signing_key_sequence(env, issuer_id, sequence);
+        Ok(record)
+    }
+
+    /// Records a terminal compromise transition for a known key commitment.
+    /// No raw key material or free-form incident data is accepted.
+    pub fn mark_signing_key_compromised(
+        env: Env,
+        issuer_id: BytesN<32>,
+        key_hash: BytesN<32>,
+        algorithm: u32,
+    ) -> Result<SigningKeyLifecycleRecord, IssuerError> {
+        Self::assert_operational(&env);
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        Self::require_auth(&admin);
+        Self::get_issuer(env.clone(), issuer_id.clone())?;
+        if algorithm == 0 || Self::is_zero_hash(&env, &key_hash) {
+            return Err(IssuerError::InvalidMetadataCommitment);
+        }
+        if Self::stored_signing_key_state(
+            env.clone(),
+            issuer_id.clone(),
+            key_hash.clone(),
+            algorithm,
+        )
+        .map(|state| state.transition == SigningKeyLifecycleTransition::Compromised)
+        .unwrap_or(false)
+        {
+            return Err(IssuerError::InvalidTransition);
+        }
+
+        let pending_key = DataKey::PendingSigningKey(issuer_id.clone());
+        let active_key = DataKey::ActiveSigningKey(issuer_id.clone());
+        let pending_match = env
+            .storage()
+            .persistent()
+            .get::<_, SigningKeyCommitment>(&pending_key)
+            .map(|pending| pending.key_hash == key_hash && pending.algorithm == algorithm)
+            .unwrap_or(false);
+        let active_match = env
+            .storage()
+            .persistent()
+            .get::<_, SigningKeyCommitment>(&active_key)
+            .map(|active| active.key_hash == key_hash && active.algorithm == algorithm)
+            .unwrap_or(false);
+        let prior_match = Self::get_prior_issuer_signing_keys(env.clone(), issuer_id.clone())
+            .iter()
+            .any(|prior| prior.key_hash == key_hash && prior.algorithm == algorithm);
+        if !pending_match && !active_match && !prior_match {
+            return Err(IssuerError::InvalidTransition);
+        }
+        let sequence = Self::checked_signing_key_sequence(env.clone(), issuer_id.clone(), 1)?;
+        if pending_match {
+            env.storage().persistent().remove(&pending_key);
+        }
+        if active_match {
+            env.storage().persistent().remove(&active_key);
+        }
+        let record = Self::append_signing_key_transition(
+            env.clone(),
+            issuer_id.clone(),
+            key_hash,
+            algorithm,
+            SigningKeyLifecycleTransition::Compromised,
+            sequence,
+        );
+        Self::store_signing_key_sequence(env, issuer_id, sequence);
+        Ok(record)
+    }
+
+    pub fn get_signing_key_usage_sequence(env: Env, issuer_id: BytesN<32>) -> u64 {
+        let key = DataKey::SigningKeyUsageSequence(issuer_id);
+        let sequence = env.storage().persistent().get(&key).unwrap_or(0);
+        if env.storage().persistent().has(&key) {
+            Self::extend_issuer_key_ttl(env, &key);
+        }
+        sequence
+    }
+
+    pub fn get_issuer_signing_key_state(
+        env: Env,
+        issuer_id: BytesN<32>,
+        key_hash: BytesN<32>,
+        algorithm: u32,
+    ) -> Option<SigningKeyLifecycleRecord> {
+        Self::stored_signing_key_state(env, issuer_id, key_hash, algorithm)
+    }
+
+    /// Returns retained lifecycle entries in ascending sequence order.
+    pub fn get_signing_key_lifecycle(
+        env: Env,
+        issuer_id: BytesN<32>,
+        cursor: u64,
+        limit: u32,
+    ) -> Result<Vec<SigningKeyLifecycleRecord>, IssuerError> {
+        if limit > MAX_SIGNING_KEY_LIFECYCLE_PAGE {
+            return Err(IssuerError::BatchTooLarge);
+        }
+        let latest = Self::get_signing_key_usage_sequence(env.clone(), issuer_id.clone());
+        let oldest = latest.saturating_sub(u64::from(
+            SIGNING_KEY_LIFECYCLE_HISTORY_CAPACITY.saturating_sub(1),
+        ));
+        let mut sequence = cursor.max(1).max(oldest);
+        let mut records = Vec::new(&env);
+        while sequence <= latest && records.len() < limit {
+            let slot = ((sequence - 1) % u64::from(SIGNING_KEY_LIFECYCLE_HISTORY_CAPACITY)) as u32;
+            let key = DataKey::SigningKeyLifecycleHistory(issuer_id.clone(), slot);
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<_, SigningKeyLifecycleRecord>(&key)
+            {
+                if record.sequence == sequence {
+                    records.push_back(record);
+                    Self::extend_issuer_key_ttl(env.clone(), &key);
+                }
+            }
+            if sequence == latest {
+                break;
+            }
+            sequence += 1;
+        }
+        Ok(records)
     }
 
     pub fn set_issuer_policy_commitments(
@@ -1813,6 +2035,74 @@ impl IssuerRegistryContract {
     /// Returns true when `hash` is the all-zero digest (an empty commitment).
     fn is_zero_hash(env: &Env, hash: &BytesN<32>) -> bool {
         hash == &Self::zero_hash(env)
+    }
+
+    fn checked_signing_key_sequence(
+        env: Env,
+        issuer_id: BytesN<32>,
+        steps: u32,
+    ) -> Result<u64, IssuerError> {
+        earnproof_shared::checked_signing_key_sequence(
+            Self::get_signing_key_usage_sequence(env, issuer_id),
+            steps,
+        )
+            .ok_or(IssuerError::SequenceOverflow)
+    }
+
+    fn store_signing_key_sequence(env: Env, issuer_id: BytesN<32>, sequence: u64) {
+        let key = DataKey::SigningKeyUsageSequence(issuer_id);
+        env.storage().persistent().set(&key, &sequence);
+        Self::extend_issuer_key_ttl(env, &key);
+    }
+
+    fn stored_signing_key_state(
+        env: Env,
+        issuer_id: BytesN<32>,
+        key_hash: BytesN<32>,
+        algorithm: u32,
+    ) -> Option<SigningKeyLifecycleRecord> {
+        let key = DataKey::SigningKeyLifecycleState(issuer_id, key_hash, algorithm);
+        let state = env.storage().persistent().get(&key);
+        if state.is_some() {
+            Self::extend_issuer_key_ttl(env, &key);
+        }
+        state
+    }
+
+    fn append_signing_key_transition(
+        env: Env,
+        issuer_id: BytesN<32>,
+        key_hash: BytesN<32>,
+        algorithm: u32,
+        transition: SigningKeyLifecycleTransition,
+        sequence: u64,
+    ) -> SigningKeyLifecycleRecord {
+        let record = SigningKeyLifecycleRecord {
+            record_version: 1,
+            key_hash: key_hash.clone(),
+            algorithm,
+            transition,
+            sequence,
+            effective_ledger: env.ledger().sequence(),
+        };
+        let slot = ((sequence - 1) % u64::from(SIGNING_KEY_LIFECYCLE_HISTORY_CAPACITY)) as u32;
+        let history_key = DataKey::SigningKeyLifecycleHistory(issuer_id.clone(), slot);
+        let state_key =
+            DataKey::SigningKeyLifecycleState(issuer_id.clone(), key_hash.clone(), algorithm);
+        env.storage().persistent().set(&history_key, &record);
+        env.storage().persistent().set(&state_key, &record);
+        Self::extend_issuer_key_ttl(env.clone(), &history_key);
+        Self::extend_issuer_key_ttl(env.clone(), &state_key);
+        SigningKeyLifecycleChanged {
+            issuer_id,
+            key_hash,
+            algorithm,
+            transition,
+            sequence,
+            effective_ledger: record.effective_ledger,
+        }
+        .publish(&env);
+        record
     }
 
     fn set_status(

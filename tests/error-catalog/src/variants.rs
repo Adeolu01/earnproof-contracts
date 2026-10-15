@@ -178,6 +178,11 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             IssuerError::InvalidMetadataCommitment as u32
         ),
         (
+            "IssuerError",
+            "SequenceOverflow",
+            IssuerError::SequenceOverflow as u32
+        ),
+        (
             "ProofError",
             "ProofAlreadyRegistered",
             ProofError::ProofAlreadyRegistered as u32

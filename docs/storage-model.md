@@ -95,6 +95,13 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 
 **Critical**: Both `Issuer(hash)` and `AddressIssuer(addr)` for a single issuer are extended together. If one expires, the other will too (same operation). Both must be present for `is_active_address()` to succeed.
 
+Signing-key lifecycle ordering is stored in additive persistent sidecars:
+`SigningKeyUsageSequence(issuer)`, the 32-slot
+`SigningKeyLifecycleHistory(issuer, slot)` ring, and
+`SigningKeyLifecycleState(issuer, key_hash, algorithm)`. These entries contain
+commitment hashes and public transition metadata only. The original
+`SigningKeyCommitment` encoding remains unchanged.
+
 ---
 
 ### Proof Registry Contract

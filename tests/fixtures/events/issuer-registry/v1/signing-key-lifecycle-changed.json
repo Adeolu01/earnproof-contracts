@@ -1,0 +1,42 @@
+{
+  "event": "SigningKeyLifecycleChanged",
+  "contract": "issuer-registry",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["SigningKeyLifecycleChanged"],
+  "payload": {
+    "issuer_id": {
+      "type": "BytesN<32>",
+      "description": "Opaque issuer identifier commitment.",
+      "example": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "key_hash": {
+      "type": "BytesN<32>",
+      "description": "Commitment to the signing key.",
+      "example": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "algorithm": {
+      "type": "U32",
+      "description": "Public signing algorithm identifier.",
+      "example": 1
+    },
+    "transition": {
+      "type": "SigningKeyLifecycleTransition",
+      "description": "Proposed, activated, retired, or compromised transition.",
+      "example": "Activated"
+    },
+    "sequence": {
+      "type": "U64",
+      "description": "Monotonic per-issuer transition sequence.",
+      "example": 2
+    },
+    "effective_ledger": {
+      "type": "U32",
+      "description": "Ledger sequence at which the transition committed.",
+      "example": 50
+    }
+  },
+  "emitted_by": "issuer signing-key lifecycle transitions",
+  "description": "Orders issuer key proposal, activation, retirement, and compromise transitions.",
+  "compatibility": "additive"
+}
