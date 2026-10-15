@@ -2,8 +2,10 @@
 
 use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
-    CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
-    SchemaPolicy, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
+    CriticalActionProposal, GenesisRecord, GovernanceApprovalEligibility,
+    GovernanceApproverSnapshot, GovernanceApproverVersion, InterfaceVersion, MigrationStatus,
+    PauseScope, SchemaPolicy, GOVERNANCE_APPROVER_SNAPSHOT_VERSION,
+    LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
     CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
     MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
     MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
@@ -48,7 +50,9 @@ enum DataKey {
     /// Monotonic count of change-history entries ever appended.
     ConfigHistoryTotal,
     CriticalActionPolicy,
+    CriticalSignerVersion(Address),
     CriticalActionProposal(BytesN<32>),
+    CriticalApproverSnapshot(BytesN<32>),
     CriticalActionNonce,
 }
 
@@ -890,8 +894,16 @@ impl ProtocolConfigContract {
         };
         let key = DataKey::CriticalActionProposal(proposal_id.clone());
         env.storage().persistent().set(&key, &proposal);
+        let snapshot_key = DataKey::CriticalApproverSnapshot(proposal_id.clone());
+        let snapshot = Self::approver_snapshot(&env, &proposal.policy);
+        env.storage().persistent().set(&snapshot_key, &snapshot);
         env.storage().persistent().extend_ttl(
             &key,
+            TTL_THRESHOLD_LEDGERS,
+            CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
+        );
+        env.storage().persistent().extend_ttl(
+            &snapshot_key,
             TTL_THRESHOLD_LEDGERS,
             CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
         );
@@ -920,6 +932,34 @@ impl ProtocolConfigContract {
         proposal
     }
 
+    pub fn get_approver_snapshot(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Option<GovernanceApproverSnapshot> {
+        let key = DataKey::CriticalApproverSnapshot(proposal_id);
+        let snapshot = env.storage().persistent().get(&key);
+        if snapshot.is_some() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
+            );
+        }
+        snapshot
+    }
+
+    pub fn approval_eligibility(
+        env: Env,
+        proposal_id: BytesN<32>,
+        signer: Address,
+    ) -> GovernanceApprovalEligibility {
+        let Some(proposal) = Self::get_critical_action_proposal(env.clone(), proposal_id.clone())
+        else {
+            return GovernanceApprovalEligibility::ProposalNotFound;
+        };
+        Self::approval_eligibility_for(&env, &proposal_id, &proposal, &signer)
+    }
+
     pub fn approve_critical_action(
         env: Env,
         proposal_id: BytesN<32>,
@@ -929,11 +969,18 @@ impl ProtocolConfigContract {
             .ok_or(ContractError::ApprovalProposalNotFound)?;
         Self::ensure_proposal_live(&env, &proposal)?;
         Self::require_auth(&signer);
-        if !proposal.policy.signers.contains(&signer) {
-            return Err(ContractError::Unauthorized);
-        }
-        if proposal.approvals.contains(&signer) {
-            return Err(ContractError::AlreadyExists);
+        match Self::approval_eligibility_for(&env, &proposal_id, &proposal, &signer) {
+            GovernanceApprovalEligibility::Eligible => {}
+            GovernanceApprovalEligibility::ProposalExpired => {
+                return Err(ContractError::ApprovalProposalExpired)
+            }
+            GovernanceApprovalEligibility::AlreadyApproved => {
+                return Err(ContractError::AlreadyExists)
+            }
+            GovernanceApprovalEligibility::ProposalNotFound => {
+                return Err(ContractError::ApprovalProposalNotFound)
+            }
+            _ => return Err(ContractError::Unauthorized),
         }
         proposal.approvals.push_back(signer.clone());
         env.storage().persistent().set(
@@ -956,6 +1003,9 @@ impl ProtocolConfigContract {
             return Err(ContractError::ApprovalProposalNotFound);
         }
         env.storage().persistent().remove(&key);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CriticalApproverSnapshot(proposal_id.clone()));
         CriticalActionCancelled {
             proposal_id,
             cancelled_by: admin,
@@ -969,7 +1019,7 @@ impl ProtocolConfigContract {
         let proposal = Self::get_critical_action_proposal(env.clone(), proposal_id.clone())
             .ok_or(ContractError::ApprovalProposalNotFound)?;
         Self::ensure_proposal_live(&env, &proposal)?;
-        if proposal.approvals.len() < proposal.policy.threshold {
+        if Self::eligible_approval_count(&env, &proposal_id, &proposal) < proposal.policy.threshold {
             return Err(ContractError::InsufficientApprovals);
         }
         let commitment = Self::commit(&env, proposal.action.clone());
@@ -1025,6 +1075,9 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .remove(&DataKey::CriticalActionProposal(proposal_id.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CriticalApproverSnapshot(proposal_id.clone()));
         CriticalActionExecuted { proposal_id }.publish(&env);
         Ok(())
     }
@@ -1494,6 +1547,20 @@ impl ProtocolConfigContract {
         policy: CriticalActionPolicy,
         commitment: BytesN<32>,
     ) {
+        let previous = Self::critical_action_policy(&env);
+        for signer in policy.signers.iter() {
+            if !previous.signers.contains(&signer) {
+                let key = DataKey::CriticalSignerVersion(signer);
+                let next = env
+                    .storage()
+                    .instance()
+                    .get::<_, u32>(&key)
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .unwrap_or_else(|| panic!("critical signer assignment version overflow"));
+                env.storage().instance().set(&key, &next);
+            }
+        }
         env.storage()
             .instance()
             .set(&DataKey::CriticalActionPolicy, &policy);
@@ -1519,6 +1586,89 @@ impl ProtocolConfigContract {
             return Err(ContractError::ApprovalProposalExpired);
         }
         Ok(())
+    }
+
+    fn signer_version(env: &Env, signer: &Address) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CriticalSignerVersion(signer.clone()))
+            .unwrap_or(0)
+    }
+
+    fn approver_snapshot(env: &Env, policy: &CriticalActionPolicy) -> GovernanceApproverSnapshot {
+        let mut approvers = Vec::new(env);
+        for address in policy.signers.iter() {
+            approvers.push_back(GovernanceApproverVersion {
+                assignment_version: Self::signer_version(env, &address),
+                address,
+            });
+        }
+        GovernanceApproverSnapshot {
+            encoding_version: GOVERNANCE_APPROVER_SNAPSHOT_VERSION,
+            approvers,
+        }
+    }
+
+    fn approval_eligibility_for(
+        env: &Env,
+        proposal_id: &BytesN<32>,
+        proposal: &CriticalActionProposal,
+        signer: &Address,
+    ) -> GovernanceApprovalEligibility {
+        if env.ledger().sequence() >= proposal.expires_at {
+            return GovernanceApprovalEligibility::ProposalExpired;
+        }
+        if proposal.approvals.contains(signer) {
+            return GovernanceApprovalEligibility::AlreadyApproved;
+        }
+        if !proposal.policy.signers.contains(signer) {
+            return GovernanceApprovalEligibility::NotInProposalSnapshot;
+        }
+        let current = Self::critical_action_policy(env);
+        if !current.enabled {
+            return GovernanceApprovalEligibility::CurrentPolicyDisabled;
+        }
+        if !current.signers.contains(signer) {
+            return GovernanceApprovalEligibility::RemovedFromCurrentPolicy;
+        }
+        if let Some(snapshot) = env
+            .storage()
+            .persistent()
+            .get::<_, GovernanceApproverSnapshot>(&DataKey::CriticalApproverSnapshot(
+                proposal_id.clone(),
+            ))
+        {
+            let captured = snapshot
+                .approvers
+                .iter()
+                .find(|entry| entry.address == *signer);
+            if snapshot.encoding_version != GOVERNANCE_APPROVER_SNAPSHOT_VERSION
+                || captured.is_none_or(|entry| {
+                    entry.assignment_version != Self::signer_version(env, signer)
+                })
+            {
+                return GovernanceApprovalEligibility::ReassignedAfterSnapshot;
+            }
+        }
+        GovernanceApprovalEligibility::Eligible
+    }
+
+    fn eligible_approval_count(
+        env: &Env,
+        proposal_id: &BytesN<32>,
+        proposal: &CriticalActionProposal,
+    ) -> u32 {
+        let mut eligible = 0;
+        for signer in proposal.approvals.iter() {
+            let mut without_signer = proposal.clone();
+            without_signer.approvals = Vec::new(env);
+            if Self::approval_eligibility_for(env, proposal_id, &without_signer, &signer)
+                == GovernanceApprovalEligibility::Eligible
+            {
+                eligible += 1;
+            }
+        }
+        eligible
     }
 
     fn critical_action_commitment(env: &Env, action: &CriticalAction, nonce: u32) -> BytesN<32> {
@@ -1549,7 +1699,8 @@ mod test {
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
         ConfigChangeCategory, ContractError, CriticalAction, CriticalActionPolicy,
-        CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, TTL_THRESHOLD_LEDGERS,
+        GovernanceApprovalEligibility, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS,
+        TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
         testutils::{storage::Persistent as _, Address as _, Ledger as _},
@@ -2573,6 +2724,119 @@ mod test {
         assert!(client
             .get_critical_action_proposal(&changed_parameters)
             .is_some());
+    }
+
+    #[test]
+    fn removed_and_new_signers_cannot_approve_pending_proposal() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 1);
+        client.set_critical_action_policy(&policy);
+        let pending = client.propose_critical_action(&CriticalAction::SchemaApproval(40));
+
+        let newcomer = Address::generate(&env);
+        let replacement = CriticalActionPolicy {
+            enabled: true,
+            threshold: 1,
+            signers: Vec::from_array(
+                &env,
+                [signers.get(1).unwrap(), signers.get(2).unwrap(), newcomer.clone()],
+            ),
+        };
+        let policy_change =
+            client.propose_critical_action(&CriticalAction::ApprovalPolicyUpdate(replacement));
+        client.approve_critical_action(&policy_change, &signers.get(0).unwrap());
+        client.execute_critical_action(&policy_change);
+
+        assert_eq!(
+            client.approval_eligibility(&pending, &signers.get(0).unwrap()),
+            GovernanceApprovalEligibility::RemovedFromCurrentPolicy
+        );
+        assert_eq!(
+            client.approval_eligibility(&pending, &newcomer),
+            GovernanceApprovalEligibility::NotInProposalSnapshot
+        );
+        assert_eq!(
+            client.try_approve_critical_action(&pending, &signers.get(0).unwrap()),
+            Err(Ok(ContractError::Unauthorized))
+        );
+    }
+
+    #[test]
+    fn removed_approval_stops_counting_but_a_still_eligible_approval_counts() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 2);
+        client.set_critical_action_policy(&policy);
+        let pending = client.propose_critical_action(&CriticalAction::SchemaApproval(41));
+        client.approve_critical_action(&pending, &signers.get(0).unwrap());
+
+        let replacement = CriticalActionPolicy {
+            enabled: true,
+            threshold: 2,
+            signers: Vec::from_array(&env, [signers.get(1).unwrap(), signers.get(2).unwrap()]),
+        };
+        let policy_change =
+            client.propose_critical_action(&CriticalAction::ApprovalPolicyUpdate(replacement));
+        client.approve_critical_action(&policy_change, &signers.get(0).unwrap());
+        client.approve_critical_action(&policy_change, &signers.get(1).unwrap());
+        client.execute_critical_action(&policy_change);
+
+        client.approve_critical_action(&pending, &signers.get(1).unwrap());
+        assert_eq!(
+            client.try_execute_critical_action(&pending),
+            Err(Ok(ContractError::InsufficientApprovals))
+        );
+        assert!(!client.is_schema_version_approved(&41));
+    }
+
+    #[test]
+    fn signer_regrant_does_not_restore_old_proposal_eligibility() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 1);
+        client.set_critical_action_policy(&policy);
+        let pending = client.propose_critical_action(&CriticalAction::SchemaApproval(42));
+
+        let without_first = CriticalActionPolicy {
+            enabled: true,
+            threshold: 1,
+            signers: Vec::from_array(&env, [signers.get(1).unwrap(), signers.get(2).unwrap()]),
+        };
+        let removal =
+            client.propose_critical_action(&CriticalAction::ApprovalPolicyUpdate(without_first));
+        client.approve_critical_action(&removal, &signers.get(0).unwrap());
+        client.execute_critical_action(&removal);
+
+        let regrant = CriticalActionPolicy {
+            enabled: true,
+            threshold: 1,
+            signers: signers.clone(),
+        };
+        let regrant_proposal =
+            client.propose_critical_action(&CriticalAction::ApprovalPolicyUpdate(regrant));
+        client.approve_critical_action(&regrant_proposal, &signers.get(1).unwrap());
+        client.execute_critical_action(&regrant_proposal);
+
+        assert_eq!(
+            client.approval_eligibility(&pending, &signers.get(0).unwrap()),
+            GovernanceApprovalEligibility::ReassignedAfterSnapshot
+        );
+    }
+
+    #[test]
+    fn eligibility_reports_closed_expiry_boundary() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 1);
+        client.set_critical_action_policy(&policy);
+        let proposal_id = client.propose_critical_action(&CriticalAction::SchemaApproval(43));
+        let expires_at = client
+            .get_critical_action_proposal(&proposal_id)
+            .unwrap()
+            .expires_at;
+        env.ledger().set_sequence_number(expires_at);
+
+        assert_eq!(
+            client.approval_eligibility(&proposal_id, &signers.get(0).unwrap()),
+            GovernanceApprovalEligibility::ProposalExpired
+        );
     }
 
     #[test]
