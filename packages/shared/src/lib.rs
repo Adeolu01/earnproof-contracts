@@ -824,6 +824,7 @@ pub enum ConfigChangeCategory {
     SchemaPolicy,
     CommitmentAlgorithmPolicy,
     ApprovalPolicyUpdate,
+    EmergencyPolicyUpdate,
 }
 
 /// Category of a protocol mutation that may require threshold approval.
@@ -836,6 +837,7 @@ pub enum CriticalActionCategory {
     IssuerRegistryReplacement,
     ProtocolConfigReplacement,
     ApprovalPolicyUpdate,
+    EmergencyPolicyUpdate,
 }
 
 /// Canonical parameters for a threshold-governed protocol action.
@@ -848,6 +850,7 @@ pub enum CriticalAction {
     IssuerRegistryReplacement(Address),
     ProtocolConfigReplacement(Address),
     ApprovalPolicyUpdate(CriticalActionPolicy),
+    EmergencyPolicyUpdate(EmergencyFastTrackPolicy),
 }
 
 impl CriticalAction {
@@ -863,6 +866,7 @@ impl CriticalAction {
                 CriticalActionCategory::ProtocolConfigReplacement
             }
             Self::ApprovalPolicyUpdate(_) => CriticalActionCategory::ApprovalPolicyUpdate,
+            Self::EmergencyPolicyUpdate(_) => CriticalActionCategory::EmergencyPolicyUpdate,
         }
     }
 }
@@ -967,6 +971,15 @@ pub enum GovernanceApprovalEligibility {
     ReassignedAfterSnapshot,
 }
 
+/// The complete allow-list of actions that may bypass normal governance
+/// timing. Deliberately excludes unpause, upgrades, and arbitrary calls.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum EmergencyAction {
+    GlobalPause,
+    ScopedPause(PauseScope),
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GovernanceApproverVersion {
@@ -983,6 +996,29 @@ pub struct GovernanceApproverSnapshot {
 }
 
 pub const GOVERNANCE_APPROVER_SNAPSHOT_VERSION: u32 = 1;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyFastTrackPolicy {
+    pub enabled: bool,
+    pub threshold: u32,
+    pub guardians: Vec<Address>,
+    pub max_lifetime_ledgers: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyActionProposal {
+    pub action: EmergencyAction,
+    pub reason_commitment: BytesN<32>,
+    pub policy: EmergencyFastTrackPolicy,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub created_at: u32,
+    pub expires_at: u32,
+}
+
+pub const EMERGENCY_FAST_TRACK_ENCODING_VERSION: u32 = 1;
 
 /// One bounded, on-chain summary of a governance change, as stored in the
 /// change-history ring.
