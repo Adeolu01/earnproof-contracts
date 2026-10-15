@@ -92,6 +92,8 @@ const PROTOCOL_CONFIG_EVENTS: &[&str] = &[
     "paused",
     "unpaused",
     "schema-approved",
+    "schema-activation-scheduled",
+    "minimum-schema-notice-changed",
     "schema-deprecated",
     "schema-predecessor-set",
 ];

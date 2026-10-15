@@ -60,6 +60,12 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 - `deprecate_schema_version(ver)`: extends on deprecation
 - `is_schema_version_approved(ver)`: extends on every read (extend-on-read pattern)
 
+`MinSchemaActivationNotice` is an additive instance policy with a legacy
+default of zero. `SchemaActivation(version)` is a persistent immutable schedule
+sidecar containing the proposal time, inclusive activation boundary, and policy
+snapshot. Pending schemas fail closed in `is_schema_version_approved`; legacy
+approved schemas without the sidecar remain active.
+
 ---
 
 ### Issuer Registry Contract
