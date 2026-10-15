@@ -297,6 +297,12 @@ pub fn deployment() -> Deployment {
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
     issuers.initialize(&admin);
     issuers.register_issuer(&issuer_id, &issuer, &bytes32(&env, 2), &bytes32(&env, 99));
+    let retired_key = bytes32(&env, 0x40);
+    issuers.propose_issuer_signing_key(&issuer_id, &retired_key, &1);
+    issuers.activate_issuer_signing_key(&issuer_id);
+    issuers.propose_issuer_signing_key(&issuer_id, &bytes32(&env, 0x41), &1);
+    issuers.activate_issuer_signing_key(&issuer_id);
+    issuers.mark_signing_key_compromised(&issuer_id, &retired_key, &1, &bytes32(&env, 0x42));
 
     let proofs_id = env.register(ProofRegistryContract, ());
     let proofs = ProofRegistryContractClient::new(&env, &proofs_id);

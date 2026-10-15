@@ -373,7 +373,7 @@ impl InterfaceVersion {
 }
 
 /// The interface version implemented by `issuer-registry`.
-pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
 
 /// The interface version implemented by `protocol-config`.
 pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
@@ -1009,6 +1009,23 @@ pub struct SigningKeyCommitment {
     pub algorithm: u32,
     pub activated_ledger: u32,
 }
+
+/// Immutable, privacy-safe evidence that an issuer signing-key commitment was
+/// declared compromised. Raw public or private key material is never stored.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompromisedSigningKeyRecord {
+    pub record_version: u32,
+    pub issuer_id_hash: BytesN<32>,
+    pub key_hash: BytesN<32>,
+    pub algorithm: u32,
+    pub effective_ledger: u32,
+    pub reason_hash: BytesN<32>,
+    pub sequence: u32,
+}
+
+/// Maximum number of compromised-key records returned by one history query.
+pub const MAX_SIGNING_KEY_COMPROMISE_HISTORY_PAGE: u32 = 20;
 
 /// Versioned opaque commitments for issuer classification policy documents.
 #[contracttype]

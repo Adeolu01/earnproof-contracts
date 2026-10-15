@@ -82,6 +82,9 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 |-------|---------|-----------------|-------------------|------------|
 | Issuer Record | `Issuer(hash)` | `get_issuer(hash)` reads & extends | IssuerNotFound error | ✓ Yes |
 | Address → Issuer Mapping | `AddressIssuer(addr)` | `is_active_address(addr)`, `get_issuer_by_address(addr)` read & extend | Not found; returns false | ✓ Yes |
+| Compromised Key Marker | `CompromisedSigningKey(issuer, key, algorithm)` | direct status query | Returns `None` | ✓ Yes |
+| Compromised Key History | `CompromisedSigningKeyHistory(issuer, sequence)` | bounded paged query | Missing entries are omitted | ✓ Yes |
+| Compromised Key Count | `CompromisedSigningKeyCount(issuer)` | bounded paged query | Returns `0` | ✓ Yes |
 
 **Persistent TTL Extensions**: 
 - `extend_issuer_ttl(hash)`: extends `Issuer(hash)` entry
@@ -92,6 +95,8 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
   - `update_issuer()`, `suspend_issuer()`, `reactivate_issuer()`, `revoke_issuer()`: extend Issuer entry
   - `rotate_issuer_address()`: extends both old entry (removed) and new entry
   - `get_issuer_by_address()`: extends AddressIssuer entry on read
+  - `mark_signing_key_compromised()`: stores and extends the immutable marker,
+    sequence entry, and per-issuer count
 
 **Critical**: Both `Issuer(hash)` and `AddressIssuer(addr)` for a single issuer are extended together. If one expires, the other will too (same operation). Both must be present for `is_active_address()` to succeed.
 

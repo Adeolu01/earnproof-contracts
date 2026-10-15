@@ -49,13 +49,21 @@ pub const CONTRACTS: [&str; 3] = ["issuer-registry", "proof-registry", "protocol
 /// Adding a row here is the second half of adding a storage key; the first is
 /// adding the `DataKey` variant. Doing one without the other fails the tests in
 /// `tests/storage-keys/`.
-pub const STORAGE_NAMESPACES: [StorageNamespace; 59] = [
+pub const STORAGE_NAMESPACES: [StorageNamespace; 65] = [
     StorageNamespace {
         contract: "issuer-registry",
         namespace: "ActiveIssuerCount",
         arity: 0,
         class: StorageClass::Instance,
         value: "u32",
+        owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "ActiveSigningKey",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "SigningKeyCommitment",
         owner: "registry operator",
     },
     StorageNamespace {
@@ -81,6 +89,30 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 59] = [
         class: StorageClass::Instance,
         value: "Address",
         owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "CompromisedSigningKey",
+        arity: 3,
+        class: StorageClass::Persistent,
+        value: "CompromisedSigningKeyRecord",
+        owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "CompromisedSigningKeyCount",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
+        owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "CompromisedSigningKeyHistory",
+        arity: 2,
+        class: StorageClass::Persistent,
+        value: "CompromisedSigningKeyRecord",
+        owner: "registry operator",
     },
     StorageNamespace {
         contract: "issuer-registry",
@@ -192,6 +224,22 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 59] = [
         arity: 0,
         class: StorageClass::Instance,
         value: "u64",
+        owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "SigningKeyHistory",
+        arity: 2,
+        class: StorageClass::Persistent,
+        value: "SigningKeyCommitment",
+        owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "SigningKeyHistoryCount",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
         owner: "registry operator",
     },
     StorageNamespace {
