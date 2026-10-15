@@ -3,11 +3,13 @@
 use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
     CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
-    SchemaCompatibility, SchemaPolicy, SchemaReplacementPointer, LEGACY_COMMITMENT_ALGORITHM,
+    SchemaActivationNotice, SchemaActivationState, SchemaCompatibility, SchemaPolicy,
+    SchemaReplacementPointer, LEGACY_COMMITMENT_ALGORITHM,
     LEGACY_PROOF_TYPE,
     CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
     MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
-    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
+    MAX_SCHEMA_ACTIVATION_NOTICE_SECONDS, MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES,
+    MAX_SCHEMA_VALIDITY_SECONDS,
     MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
     SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
@@ -27,6 +29,8 @@ enum DataKey {
     ScopedPause(PauseScope),
     ConfigVersion,
     SchemaVersion(u32),
+    SchemaActivation(u32),
+    MinSchemaActivationNotice,
     SchemaPredecessor(u32),
     SchemaReplacement(u32),
     SchemaPolicy(u32),
@@ -98,6 +102,20 @@ pub struct Unpaused {
 #[contractevent]
 pub struct SchemaApproved {
     pub version: u32,
+}
+
+#[contractevent]
+pub struct SchemaActivationScheduled {
+    pub version: u32,
+    pub proposed_at: u64,
+    pub activates_at: u64,
+    pub minimum_notice_seconds: u64,
+}
+
+#[contractevent]
+pub struct MinimumSchemaNoticeChanged {
+    pub minimum_notice_seconds: u64,
+    pub changed_by: Address,
 }
 
 #[contractevent]
@@ -567,6 +585,21 @@ impl ProtocolConfigContract {
         Self::require_auth(&admin);
         Self::ensure_critical_action_policy_disabled(&env)?;
         Self::ensure_nonzero_version(version)?;
+        let proposed_at = env.ledger().timestamp();
+        let minimum_notice_seconds = Self::get_min_schema_activation_notice(env.clone());
+        Self::validate_schema_activation_time(
+            proposed_at,
+            proposed_at,
+            minimum_notice_seconds,
+        )?;
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::SchemaVersion(version))
+            == Some(true)
+        {
+            return Err(ContractError::AlreadyExists);
+        }
         if predecessor == version {
             return Err(ContractError::InvalidInput);
         }
@@ -588,6 +621,13 @@ impl ProtocolConfigContract {
             .persistent()
             .set(&DataKey::SchemaVersion(version), &true);
         Self::extend_schema_ttl(env.clone(), version);
+        Self::store_schema_activation_notice(
+            env.clone(),
+            version,
+            proposed_at,
+            proposed_at,
+            minimum_notice_seconds,
+        );
         if predecessor != 0 {
             let key = DataKey::SchemaPredecessor(version);
             env.storage().persistent().set(&key, &predecessor);
@@ -635,19 +675,106 @@ impl ProtocolConfigContract {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_critical_action_policy_disabled(&env)?;
-        Self::ensure_nonzero_version(version)?;
+        let now = env.ledger().timestamp();
+        let commitment = Self::commit(&env, version);
+        Self::apply_schema_activation(
+            env,
+            version,
+            now,
+            ConfigChangeCategory::SchemaApproval,
+            commitment,
+        )
+    }
+
+    /// Approves a schema with an explicit future activation timestamp.
+    pub fn approve_schema_at(
+        env: Env,
+        version: u32,
+        activates_at: u64,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_critical_action_policy_disabled(&env)?;
+        let commitment = Self::commit(&env, (version, activates_at));
+        Self::apply_schema_activation(
+            env,
+            version,
+            activates_at,
+            ConfigChangeCategory::SchemaActivation,
+            commitment,
+        )
+    }
+
+    pub fn set_min_schema_activation_notice(
+        env: Env,
+        minimum_notice_seconds: u64,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if minimum_notice_seconds > MAX_SCHEMA_ACTIVATION_NOTICE_SECONDS {
+            return Err(ContractError::InvalidTimingConfig);
+        }
+        if Self::get_min_schema_activation_notice(env.clone()) == minimum_notice_seconds {
+            return Err(ContractError::InvalidState);
+        }
         env.storage()
-            .persistent()
-            .set(&DataKey::SchemaVersion(version), &true);
-        Self::extend_schema_ttl(env.clone(), version);
+            .instance()
+            .set(&DataKey::MinSchemaActivationNotice, &minimum_notice_seconds);
         Self::bump_config_version(env.clone());
         Self::append_config_history(
             env.clone(),
-            ConfigChangeCategory::SchemaApproval,
-            Self::commit(&env, version),
+            ConfigChangeCategory::SchemaActivationNotice,
+            Self::commit(&env, minimum_notice_seconds),
         );
-        SchemaApproved { version }.publish(&env);
+        MinimumSchemaNoticeChanged {
+            minimum_notice_seconds,
+            changed_by: admin,
+        }
+        .publish(&env);
         Ok(())
+    }
+
+    pub fn get_min_schema_activation_notice(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinSchemaActivationNotice)
+            .unwrap_or(0)
+    }
+
+    pub fn get_schema_activation_notice(
+        env: Env,
+        version: u32,
+    ) -> Option<SchemaActivationNotice> {
+        let key = DataKey::SchemaActivation(version);
+        let notice = env.storage().persistent().get(&key);
+        if notice.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        }
+        notice
+    }
+
+    pub fn get_schema_activation_state(env: Env, version: u32) -> SchemaActivationState {
+        if version == 0 {
+            return SchemaActivationState::Unknown;
+        }
+        let stored: Option<bool> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SchemaVersion(version));
+        match stored {
+            None => SchemaActivationState::Unknown,
+            Some(false) => SchemaActivationState::Deprecated,
+            Some(true) => match Self::get_schema_activation_notice(env.clone(), version) {
+                Some(notice) if env.ledger().timestamp() < notice.activates_at => {
+                    SchemaActivationState::Pending
+                }
+                _ => SchemaActivationState::Active,
+            },
+        }
     }
 
     pub fn deprecate_schema_version(env: Env, version: u32) -> Result<(), ContractError> {
@@ -737,6 +864,9 @@ impl ProtocolConfigContract {
             );
         }
         approved
+            && Self::get_schema_activation_notice(env.clone(), version)
+                .map(|notice| env.ledger().timestamp() >= notice.activates_at)
+                .unwrap_or(true)
     }
 
     pub fn set_schema_policy(
@@ -919,6 +1049,7 @@ impl ProtocolConfigContract {
         if !matches!(
             &action,
             CriticalAction::SchemaApproval(_)
+                | CriticalAction::SchemaActivation(_, _)
                 | CriticalAction::SchemaDeprecation(_)
                 | CriticalAction::SchemaReplacement(_, _, _)
                 | CriticalAction::SchemaPayloadLimit(_, _)
@@ -1038,17 +1169,22 @@ impl ProtocolConfigContract {
         let commitment = Self::commit(&env, proposal.action.clone());
         match proposal.action.clone() {
             CriticalAction::SchemaApproval(version) => {
-                Self::ensure_nonzero_version(version)?;
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::SchemaVersion(version), &true);
-                Self::extend_schema_ttl(env.clone(), version);
-                Self::record_critical_action_change(
+                Self::apply_schema_activation(
                     env.clone(),
+                    version,
+                    env.ledger().timestamp(),
                     ConfigChangeCategory::SchemaApproval,
                     commitment,
-                );
-                SchemaApproved { version }.publish(&env);
+                )?;
+            }
+            CriticalAction::SchemaActivation(version, activates_at) => {
+                Self::apply_schema_activation(
+                    env.clone(),
+                    version,
+                    activates_at,
+                    ConfigChangeCategory::SchemaActivation,
+                    commitment,
+                )?;
             }
             CriticalAction::SchemaDeprecation(version) => {
                 Self::ensure_nonzero_version(version)?;
@@ -1604,6 +1740,89 @@ impl ProtocolConfigContract {
             }
         }
         false
+    }
+
+    fn validate_schema_activation_time(
+        proposed_at: u64,
+        activates_at: u64,
+        minimum_notice_seconds: u64,
+    ) -> Result<(), ContractError> {
+        let earliest = proposed_at
+            .checked_add(minimum_notice_seconds)
+            .ok_or(ContractError::InvalidTimingConfig)?;
+        if activates_at < earliest {
+            return Err(ContractError::InvalidTimingConfig);
+        }
+        Ok(())
+    }
+
+    fn store_schema_activation_notice(
+        env: Env,
+        version: u32,
+        proposed_at: u64,
+        activates_at: u64,
+        minimum_notice_seconds: u64,
+    ) {
+        let key = DataKey::SchemaActivation(version);
+        let notice = SchemaActivationNotice {
+            notice_version: 1,
+            schema_version: version,
+            proposed_at,
+            activates_at,
+            minimum_notice_seconds,
+        };
+        env.storage().persistent().set(&key, &notice);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    }
+
+    fn apply_schema_activation(
+        env: Env,
+        version: u32,
+        activates_at: u64,
+        category: ConfigChangeCategory,
+        change_commitment: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        Self::ensure_nonzero_version(version)?;
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::SchemaVersion(version))
+            == Some(true)
+        {
+            return Err(ContractError::AlreadyExists);
+        }
+        let proposed_at = env.ledger().timestamp();
+        let minimum_notice_seconds = Self::get_min_schema_activation_notice(env.clone());
+        Self::validate_schema_activation_time(
+            proposed_at,
+            activates_at,
+            minimum_notice_seconds,
+        )?;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::SchemaVersion(version), &true);
+        Self::extend_schema_ttl(env.clone(), version);
+        Self::store_schema_activation_notice(
+            env.clone(),
+            version,
+            proposed_at,
+            activates_at,
+            minimum_notice_seconds,
+        );
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(env.clone(), category, change_commitment);
+        SchemaActivationScheduled {
+            version,
+            proposed_at,
+            activates_at,
+            minimum_notice_seconds,
+        }
+        .publish(&env);
+        SchemaApproved { version }.publish(&env);
+        Ok(())
     }
 
     fn legacy_schema_policy(env: &Env) -> SchemaPolicy {

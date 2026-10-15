@@ -99,6 +99,8 @@ pub const DEFAULT_SCHEMA_RATE_LIMIT: u32 = u32::MAX;
 
 /// Maximum validity duration that protocol governance may assign to a schema.
 pub const MAX_SCHEMA_VALIDITY_SECONDS: u64 = 3_153_600_000;
+/// Maximum governed notice before a schema may become active (one year).
+pub const MAX_SCHEMA_ACTIVATION_NOTICE_SECONDS: u64 = 31_536_000;
 /// Maximum number of numeric proof types allowed in one schema policy.
 pub const MAX_SCHEMA_PROOF_TYPES: u32 = 16;
 /// Compatibility proof type used by legacy registration entry points.
@@ -814,6 +816,8 @@ pub enum ConfigChangeCategory {
     PauseToggle,
     ScopedPause,
     SchemaApproval,
+    SchemaActivation,
+    SchemaActivationNotice,
     SchemaDeprecation,
     SchemaReplacement,
     SchemaPayloadLimit,
@@ -827,6 +831,7 @@ pub enum ConfigChangeCategory {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum CriticalActionCategory {
     SchemaApproval,
+    SchemaActivation,
     SchemaDeprecation,
     SchemaReplacement,
     SchemaPayloadLimit,
@@ -840,6 +845,7 @@ pub enum CriticalActionCategory {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CriticalAction {
     SchemaApproval(u32),
+    SchemaActivation(u32, u64),
     SchemaDeprecation(u32),
     SchemaReplacement(u32, u32, SchemaCompatibility),
     SchemaPayloadLimit(u32, u32),
@@ -852,6 +858,7 @@ impl CriticalAction {
     pub fn category(&self) -> CriticalActionCategory {
         match self {
             Self::SchemaApproval(_) => CriticalActionCategory::SchemaApproval,
+            Self::SchemaActivation(_, _) => CriticalActionCategory::SchemaActivation,
             Self::SchemaDeprecation(_) => CriticalActionCategory::SchemaDeprecation,
             Self::SchemaReplacement(_, _, _) => CriticalActionCategory::SchemaReplacement,
             Self::SchemaPayloadLimit(_, _) => CriticalActionCategory::SchemaPayloadLimit,
@@ -884,6 +891,27 @@ pub struct SchemaReplacementPointer {
     pub replacement_version: u32,
     pub compatibility: SchemaCompatibility,
     pub effective_ledger: u32,
+}
+
+/// Immutable activation boundary captured when a schema is scheduled.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaActivationNotice {
+    pub notice_version: u32,
+    pub schema_version: u32,
+    pub proposed_at: u64,
+    pub activates_at: u64,
+    pub minimum_notice_seconds: u64,
+}
+
+/// Query state for a schema activation schedule.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SchemaActivationState {
+    Unknown,
+    Pending,
+    Active,
+    Deprecated,
 }
 
 /// Optional multi-party approval policy for critical protocol actions.
