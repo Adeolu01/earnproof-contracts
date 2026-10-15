@@ -15,7 +15,10 @@ extern crate std;
 
 #[cfg(test)]
 mod tests {
-    use earnproof_shared::{ProofError, ProofStatus};
+    use earnproof_shared::{
+        DisputeFilingAnchor, DisputeFilingPolicy, DisputeFilingStatus, ProofError, ProofStatus,
+        DISPUTE_FILING_POLICY_VERSION,
+    };
     use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
     use proof_registry::{ProofRegistryContract, ProofRegistryContractClient};
     use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
@@ -484,5 +487,95 @@ mod tests {
         // revoked_at was set at the time of revocation, not at expiry.
         let record = fixture.proofs.get_proof(&bytes(&fixture.clock.env, 80));
         assert_eq!(record.revoked_at, NOW + 5);
+    }
+
+    #[test]
+    fn dispute_filing_created_window_enforces_exact_boundaries_and_replay() {
+        let fixture = fixture();
+        register(&fixture, 90, NOW + 100);
+        fixture
+            .config
+            .set_dispute_filing_policy(&DisputeFilingPolicy {
+                version: DISPUTE_FILING_POLICY_VERSION,
+                anchor: DisputeFilingAnchor::Created,
+                opens_after_seconds: 5,
+                closes_after_seconds: 10,
+            });
+
+        let proof_id = bytes(&fixture.clock.env, 90);
+        fixture.clock.set_to(NOW + 4);
+        assert_eq!(
+            fixture
+                .proofs
+                .get_dispute_filing_eligibility(&proof_id)
+                .status,
+            DisputeFilingStatus::NotYetOpen
+        );
+        assert_eq!(
+            fixture.proofs.try_open_dispute(
+                &proof_id,
+                &fixture.issuer,
+                &bytes(&fixture.clock.env, 91)
+            ),
+            Err(Ok(ProofError::DisputeFilingWindowClosed))
+        );
+
+        fixture.clock.set_to(NOW + 5);
+        assert_eq!(
+            fixture
+                .proofs
+                .get_dispute_filing_eligibility(&proof_id)
+                .status,
+            DisputeFilingStatus::Eligible
+        );
+        fixture
+            .proofs
+            .open_dispute(&proof_id, &fixture.issuer, &bytes(&fixture.clock.env, 91));
+        fixture.proofs.withdraw_dispute(&proof_id);
+
+        fixture.clock.set_to(NOW + 10);
+        assert_eq!(
+            fixture
+                .proofs
+                .get_dispute_filing_eligibility(&proof_id)
+                .status,
+            DisputeFilingStatus::Closed
+        );
+        assert_eq!(
+            fixture.proofs.try_open_dispute(
+                &proof_id,
+                &fixture.issuer,
+                &bytes(&fixture.clock.env, 92)
+            ),
+            Err(Ok(ProofError::DisputeFilingWindowClosed))
+        );
+    }
+
+    #[test]
+    fn dispute_filing_revocation_anchor_requires_terminal_revocation_timestamp() {
+        let fixture = fixture();
+        register(&fixture, 92, NOW + 100);
+        fixture
+            .config
+            .set_dispute_filing_policy(&DisputeFilingPolicy {
+                version: DISPUTE_FILING_POLICY_VERSION,
+                anchor: DisputeFilingAnchor::Revoked,
+                opens_after_seconds: 0,
+                closes_after_seconds: 10,
+            });
+        let proof_id = bytes(&fixture.clock.env, 92);
+        assert_eq!(
+            fixture
+                .proofs
+                .get_dispute_filing_eligibility(&proof_id)
+                .status,
+            DisputeFilingStatus::AnchorUnavailable
+        );
+
+        fixture.clock.set_to(NOW + 7);
+        fixture.proofs.revoke_proof(&proof_id);
+        let eligibility = fixture.proofs.get_dispute_filing_eligibility(&proof_id);
+        assert_eq!(eligibility.anchor_timestamp, NOW + 7);
+        assert_eq!(eligibility.status, DisputeFilingStatus::Eligible);
     }
 }

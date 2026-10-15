@@ -1,0 +1,27 @@
+{
+  "event": "AdminTransferExpired",
+  "contract": "protocol-config",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["AdminTransferExpired"],
+  "payload": {
+    "pending_admin": {
+      "type": "Address",
+      "description": "Stellar address whose administrator nomination expired.",
+      "example": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+    },
+    "expired_at_ledger": {
+      "type": "U32",
+      "description": "Exclusive ledger boundary after which acceptance is forbidden.",
+      "example": 121060
+    },
+    "cleaned_at_ledger": {
+      "type": "U32",
+      "description": "Ledger where expired nomination state was removed.",
+      "example": 121060
+    }
+  },
+  "emitted_by": "cleanup_expired_admin_transfer",
+  "description": "Emitted when expired administrator nomination state is terminally cleaned.",
+  "compatibility": "additive"
+}

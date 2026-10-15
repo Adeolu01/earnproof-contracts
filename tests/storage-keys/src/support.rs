@@ -113,6 +113,10 @@ pub fn issuer_key(id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (symbol_short!("Issuer"), id.clone())
 }
 
+pub fn issuer_revocation_tombstone_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "RevocationTombstone"), id.clone())
+}
+
 pub fn issuer_index_key(env: &Env, index: u32) -> (Symbol, u32) {
     (Symbol::new(env, "IssuerIndex"), index)
 }
@@ -151,6 +155,10 @@ pub fn proof_context_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
 
 pub fn proof_subject_pseudonym_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(env, "ProofSubjectPseudonym"), id.clone())
+}
+
+pub fn proof_subject_nullifier_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "SubjectNullifier"), id.clone())
 }
 
 pub fn genesis_key() -> (Symbol,) {
@@ -297,6 +305,12 @@ pub fn deployment() -> Deployment {
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
     issuers.initialize(&admin);
     issuers.register_issuer(&issuer_id, &issuer, &bytes32(&env, 2), &bytes32(&env, 99));
+    let retired_key = bytes32(&env, 0x40);
+    issuers.propose_issuer_signing_key(&issuer_id, &retired_key, &1);
+    issuers.activate_issuer_signing_key(&issuer_id);
+    issuers.propose_issuer_signing_key(&issuer_id, &bytes32(&env, 0x41), &1);
+    issuers.activate_issuer_signing_key(&issuer_id);
+    issuers.mark_signing_key_compromised(&issuer_id, &retired_key, &1, &bytes32(&env, 0x42));
 
     let proofs_id = env.register(ProofRegistryContract, ());
     let proofs = ProofRegistryContractClient::new(&env, &proofs_id);
@@ -349,7 +363,14 @@ pub fn exercised_deployment() -> Deployment {
     // Approve a successor with a lineage link so SchemaPredecessor is exercised.
     config.approve_schema_with_predecessor(&3, &1);
     config.set_schema_payload_limit(&1, &2_048);
+    let config_incident_operator = Address::generate(&env);
+    config.set_pause_acknowledger(&config_incident_operator, &true);
     config.pause();
+    config.acknowledge_pause(
+        &earnproof_shared::PauseScope::Global,
+        &bytes32(&env, 0x43),
+        &config_incident_operator,
+    );
     config.unpause();
     config.nominate_admin(&rotated_admin);
     config.accept_admin();
@@ -357,6 +378,7 @@ pub fn exercised_deployment() -> Deployment {
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
     issuers.initialize(&admin);
+    issuers.set_role_activation_delay(&earnproof_shared::GovernanceRole::IssuerManagement, &10);
     issuers.grant_governance_role(
         &bytes32(&env, 0x21),
         &earnproof_shared::GovernanceRole::IssuerManagement,
@@ -435,7 +457,14 @@ pub fn exercised_deployment() -> Deployment {
     proofs.revoke_proof(&bytes32(&env, 7));
     proofs.open_dispute(&proof_id, &rotated_issuer, &bytes32(&env, 30));
     proofs.archive_proof(&bytes32(&env, 7));
+    let proof_incident_operator = Address::generate(&env);
+    proofs.set_pause_acknowledger(&proof_incident_operator, &true);
     proofs.pause_scope(&earnproof_shared::PauseScope::Updates);
+    proofs.acknowledge_pause(
+        &earnproof_shared::PauseScope::Updates,
+        &bytes32(&env, 0x44),
+        &proof_incident_operator,
+    );
     proofs.unpause_scope(&earnproof_shared::PauseScope::Updates);
     let wasm_hash_proofs = bytes32(&env, 0x93);
     let pending_proofs = bytes32(&env, 0x96);

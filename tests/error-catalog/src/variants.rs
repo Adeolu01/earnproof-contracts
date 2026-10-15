@@ -84,6 +84,11 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
         ),
         (
             "ContractError",
+            "AdminNominationExpired",
+            ContractError::AdminNominationExpired as u32,
+        ),
+        (
+            "ContractError",
             "ProtocolPaused",
             ContractError::ProtocolPaused as u32
         ),
@@ -311,6 +316,16 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "ProofError",
             "TooManySuccessors",
             ProofError::TooManySuccessors as u32,
+        ),
+        (
+            "ProofError",
+            "DisputeFilingWindowClosed",
+            ProofError::DisputeFilingWindowClosed as u32,
+        ),
+        (
+            "ProofError",
+            "UnsupportedNullifierDomain",
+            ProofError::UnsupportedNullifierDomain as u32,
         ),
     ]
 }
