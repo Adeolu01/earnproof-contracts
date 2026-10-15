@@ -1384,7 +1384,7 @@ impl IssuerRegistryContract {
         new_address: Address,
     ) -> Result<(), IssuerError> {
         Self::assert_operational(&env);
-        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        let _admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
         Self::require_valid_issuer_address(&new_address)?;
         let key = DataKey::Issuer(issuer_id_hash.clone());
         let record: IssuerRecord = env

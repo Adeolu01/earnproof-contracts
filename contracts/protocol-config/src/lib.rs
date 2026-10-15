@@ -834,7 +834,7 @@ impl ProtocolConfigContract {
         }
         let mut current = version;
         for _ in 0..=MAX_SCHEMA_LINEAGE_DEPTH {
-            if chain.contains(&current) {
+            if chain.contains(current) {
                 break;
             }
             chain.push_back(current);
@@ -1642,7 +1642,7 @@ impl ProtocolConfigContract {
             if current == target {
                 return Ok(true);
             }
-            if visited.contains(&current) {
+            if visited.contains(current) {
                 return Err(ContractError::InvalidState);
             }
             visited.push_back(current);
