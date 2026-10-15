@@ -116,6 +116,13 @@ tier, version, effective ledger, and sequence; accreditation documents and
 their private contents remain off-chain. The 16-entry ring is chronological,
 replay-safe, and never rewrites `IssuerRecord` or an existing proof binding.
 
+Signing-key lifecycle ordering is stored in additive persistent sidecars:
+`SigningKeyUsageSequence(issuer)`, the 32-slot
+`SigningKeyLifecycleHistory(issuer, slot)` ring, and
+`SigningKeyLifecycleState(issuer, key_hash, algorithm)`. These entries contain
+commitment hashes and public transition metadata only. The original
+`SigningKeyCommitment` encoding remains unchanged.
+
 ---
 
 ### Proof Registry Contract

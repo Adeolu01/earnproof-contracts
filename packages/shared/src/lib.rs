@@ -1067,6 +1067,38 @@ pub struct SigningKeyCommitment {
     pub activated_ledger: u32,
 }
 
+/// Number of most-recent key lifecycle transitions retained per issuer.
+pub const SIGNING_KEY_LIFECYCLE_HISTORY_CAPACITY: u32 = 32;
+/// Maximum lifecycle transitions returned by one query.
+pub const MAX_SIGNING_KEY_LIFECYCLE_PAGE: u32 = 20;
+
+/// Checked advancement used by signing-key lifecycle transitions. Callers
+/// reserve every sequence a compound transition needs before writing state.
+pub fn checked_signing_key_sequence(current: u64, steps: u32) -> Option<u64> {
+    current.checked_add(u64::from(steps))
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SigningKeyLifecycleTransition {
+    Proposed,
+    Activated,
+    Retired,
+    Compromised,
+}
+
+/// Versioned public lifecycle sidecar for an issuer signing-key commitment.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SigningKeyLifecycleRecord {
+    pub record_version: u32,
+    pub key_hash: BytesN<32>,
+    pub algorithm: u32,
+    pub transition: SigningKeyLifecycleTransition,
+    pub sequence: u64,
+    pub effective_ledger: u32,
+}
+
 /// Versioned opaque commitments for issuer classification policy documents.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1827,6 +1859,19 @@ mod proof_context_tests {
             &BytesN::from_array(&env, &[0x33; 32]),
         )
         .is_none());
+    }
+}
+
+#[cfg(test)]
+mod signing_key_sequence_tests {
+    use super::checked_signing_key_sequence;
+
+    #[test]
+    fn sequence_advancement_rejects_overflow_atomically() {
+        assert_eq!(checked_signing_key_sequence(0, 1), Some(1));
+        assert_eq!(checked_signing_key_sequence(u64::MAX - 1, 1), Some(u64::MAX));
+        assert_eq!(checked_signing_key_sequence(u64::MAX - 1, 2), None);
+        assert_eq!(checked_signing_key_sequence(u64::MAX, 1), None);
     }
 }
 
