@@ -373,7 +373,7 @@ impl InterfaceVersion {
 }
 
 /// The interface version implemented by `issuer-registry`.
-pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
 
 /// The interface version implemented by `protocol-config`.
 pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 2, 0);
@@ -412,6 +412,16 @@ impl GovernanceRoleAssignment {
     pub fn is_pending_at(&self, ledger: u32) -> bool {
         ledger < self.activation_ledger
     }
+}
+
+/// Explicit ledger-relative state of a governance role assignment.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceRoleState {
+    Missing,
+    Pending,
+    Active,
+    Expired,
 }
 
 /// Derives a network- and contract-scoped key for one-time governance
@@ -942,6 +952,37 @@ pub fn governance_signer_set_digest(env: &Env, signers: &Vec<Address>) -> BytesN
     );
     env.crypto().sha256(&preimage.to_xdr(env)).to_bytes()
 }
+
+/// Why an address can or cannot approve a pending critical action.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceApprovalEligibility {
+    Eligible,
+    ProposalNotFound,
+    ProposalExpired,
+    AlreadyApproved,
+    NotInProposalSnapshot,
+    CurrentPolicyDisabled,
+    RemovedFromCurrentPolicy,
+    ReassignedAfterSnapshot,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceApproverVersion {
+    pub address: Address,
+    pub assignment_version: u32,
+}
+
+/// Assignment generations captured for every signer in a proposal policy.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceApproverSnapshot {
+    pub encoding_version: u32,
+    pub approvers: Vec<GovernanceApproverVersion>,
+}
+
+pub const GOVERNANCE_APPROVER_SNAPSHOT_VERSION: u32 = 1;
 
 /// One bounded, on-chain summary of a governance change, as stored in the
 /// change-history ring.
