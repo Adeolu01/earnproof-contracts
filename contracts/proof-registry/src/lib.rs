@@ -7,11 +7,12 @@
 use earnproof_shared::{
     is_interface_compatible, ApprovalQuery, ApprovalStatus, ArchivedProofRecord, ContractError,
     DisputeActorClass, DisputeRecord, DisputeStatus, GenesisRecord, InterfaceVersion,
-    MigrationStatus, PauseScope, ProofError, ProofPayloadRecord, ProofRecord,
-    ProofRegistrationInput, ProofStatus, ProofValidity, ProofValidityDetails, SchemaRateLimit,
-    SchemaRateLimitUsage, TtlStatus, UpgradeApproval, UpgradeApprovalMetadata,
-    UpgradeApprovalRecord, UpgradeHistoryRecord, UpgradeReceipt, MAX_MIGRATION_BATCH,
-    MAX_PROOF_BATCH_SIZE, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    MigrationStatus, PauseAcknowledgementRecord, PauseAcknowledgementRole, PauseScope, ProofError,
+    ProofPayloadRecord, ProofRecord, ProofRegistrationInput, ProofStatus, ProofValidity,
+    ProofValidityDetails, SchemaRateLimit, SchemaRateLimitUsage, TtlStatus, UpgradeApproval,
+    UpgradeApprovalMetadata, UpgradeApprovalRecord, UpgradeHistoryRecord, UpgradeReceipt,
+    MAX_MIGRATION_BATCH, MAX_PAUSE_ACKNOWLEDGEMENT_HISTORY_PAGE, MAX_PROOF_BATCH_SIZE,
+    MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
     UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{
@@ -106,6 +107,10 @@ enum DataKey {
     UpgradeHistoryCount,
     /// One upgrade history log entry, keyed by its index.
     UpgradeHistory(u32),
+    PauseAcknowledger(Address),
+    PauseAcknowledgementHash(BytesN<32>),
+    PauseAcknowledgementHistory(u32),
+    PauseAcknowledgementCount,
 }
 
 #[contractevent]
@@ -163,6 +168,18 @@ pub struct ContractUpgraded {
 pub struct ScopedPauseChanged {
     pub scope: PauseScope,
     pub paused: bool,
+    pub changed_by: Address,
+}
+
+#[contractevent]
+pub struct PauseAcknowledged {
+    pub record: PauseAcknowledgementRecord,
+}
+
+#[contractevent]
+pub struct PauseAcknowledgerChanged {
+    pub address: Address,
+    pub enabled: bool,
     pub changed_by: Address,
 }
 
@@ -471,6 +488,142 @@ impl ProofRegistryContract {
         }
         .publish(&env);
         Ok(())
+    }
+
+    pub fn set_pause_acknowledger(
+        env: Env,
+        address: Address,
+        enabled: bool,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_valid_principal(&address)?;
+        Self::require_auth(&admin);
+        let key = DataKey::PauseAcknowledger(address.clone());
+        env.storage().persistent().set(&key, &enabled);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        PauseAcknowledgerChanged {
+            address,
+            enabled,
+            changed_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn is_pause_acknowledger(env: Env, address: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PauseAcknowledger(address))
+            .unwrap_or(false)
+    }
+
+    pub fn acknowledge_pause(
+        env: Env,
+        scope: PauseScope,
+        acknowledgement_hash: BytesN<32>,
+        actor: Address,
+    ) -> Result<PauseAcknowledgementRecord, ContractError> {
+        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        let local_pause = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ScopedPause(scope))
+            .unwrap_or(false);
+        if !local_pause && !Self::is_scope_paused(&env, scope) {
+            return Err(ContractError::InvalidState);
+        }
+        if acknowledgement_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(ContractError::InvalidInput);
+        }
+        let admin = Self::get_admin(env.clone())?;
+        let role = if actor == admin {
+            PauseAcknowledgementRole::Administrator
+        } else if Self::is_pause_acknowledger(env.clone(), actor.clone()) {
+            PauseAcknowledgementRole::IncidentOperator
+        } else {
+            return Err(ContractError::Unauthorized);
+        };
+        Self::require_auth(&actor);
+
+        let hash_key = DataKey::PauseAcknowledgementHash(acknowledgement_hash.clone());
+        if env.storage().persistent().has(&hash_key) {
+            return Err(ContractError::InvalidInput);
+        }
+        let sequence: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseAcknowledgementCount)
+            .unwrap_or(0);
+        if sequence == u32::MAX {
+            return Err(ContractError::InvalidState);
+        }
+        let record = PauseAcknowledgementRecord {
+            record_version: 1,
+            sequence,
+            scope,
+            acknowledgement_hash,
+            acknowledged_by: actor,
+            role,
+            acknowledged_at_ledger: env.ledger().sequence(),
+        };
+        let history_key = DataKey::PauseAcknowledgementHistory(sequence);
+        env.storage().persistent().set(&hash_key, &record);
+        env.storage().persistent().set(&history_key, &record);
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseAcknowledgementCount, &(sequence + 1));
+        for key in [&hash_key, &history_key] {
+            env.storage().persistent().extend_ttl(
+                key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        Self::extend_instance_ttl(env.clone());
+        PauseAcknowledged {
+            record: record.clone(),
+        }
+        .publish(&env);
+        Ok(record)
+    }
+
+    pub fn get_pause_acknowledgement(
+        env: Env,
+        acknowledgement_hash: BytesN<32>,
+    ) -> Option<PauseAcknowledgementRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PauseAcknowledgementHash(acknowledgement_hash))
+    }
+
+    pub fn get_pause_acknowledgements(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Result<Vec<PauseAcknowledgementRecord>, ContractError> {
+        if limit == 0 || limit > MAX_PAUSE_ACKNOWLEDGEMENT_HISTORY_PAGE {
+            return Err(ContractError::BatchTooLarge);
+        }
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseAcknowledgementCount)
+            .unwrap_or(0);
+        let end = cursor.saturating_add(limit).min(count);
+        let mut records = Vec::new(&env);
+        for sequence in cursor..end {
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::PauseAcknowledgementHistory(sequence))
+            {
+                records.push_back(record);
+            }
+        }
+        Ok(records)
     }
 
     /// Registers a proof with an issuer-approved stable proof-type identifier
