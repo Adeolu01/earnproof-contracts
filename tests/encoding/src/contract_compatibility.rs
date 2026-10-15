@@ -17,8 +17,8 @@ use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{Address, BytesN, Env, String, Symbol, TryFromVal, Val};
 
 use earnproof_shared::{
-    compute_subject_nullifier_commitment, compute_subject_pseudonym_commitment,
-    compute_schema_policy_digest, SchemaLifecyclePolicy, SchemaPolicy, SchemaRateLimit,
+    compute_schema_policy_digest, compute_subject_nullifier_commitment,
+    compute_subject_pseudonym_commitment, SchemaLifecyclePolicy, SchemaPolicy, SchemaRateLimit,
     UpgradeCompatibilityAttestation, SCHEMA_POLICY_DIGEST_VERSION,
 };
 use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
