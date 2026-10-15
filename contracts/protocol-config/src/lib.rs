@@ -2,8 +2,9 @@
 
 use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
-    CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
-    SchemaPolicy, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
+    CriticalActionProposal, GenesisRecord, GovernanceApprovalSnapshot, InterfaceVersion,
+    MigrationStatus, PauseScope, SchemaPolicy, GOVERNANCE_APPROVAL_SNAPSHOT_VERSION,
+    LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
     CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
     MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
     MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
@@ -48,7 +49,9 @@ enum DataKey {
     /// Monotonic count of change-history entries ever appended.
     ConfigHistoryTotal,
     CriticalActionPolicy,
+    CriticalActionPolicyVersion,
     CriticalActionProposal(BytesN<32>),
+    CriticalActionSnapshot(BytesN<32>),
     CriticalActionNonce,
 }
 
@@ -827,6 +830,13 @@ impl ProtocolConfigContract {
         Self::critical_action_policy(&env)
     }
 
+    pub fn get_critical_policy_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CriticalActionPolicyVersion)
+            .unwrap_or(0)
+    }
+
     /// Bootstrap or replace the critical-action policy. Once threshold
     /// approvals are enabled, policy changes must themselves be approved.
     pub fn set_critical_action_policy(
@@ -890,8 +900,24 @@ impl ProtocolConfigContract {
         };
         let key = DataKey::CriticalActionProposal(proposal_id.clone());
         env.storage().persistent().set(&key, &proposal);
+        let snapshot_key = DataKey::CriticalActionSnapshot(proposal_id.clone());
+        let snapshot = GovernanceApprovalSnapshot {
+            snapshot_version: GOVERNANCE_APPROVAL_SNAPSHOT_VERSION,
+            policy_version: Self::get_critical_policy_version(env.clone()),
+            threshold: proposal.policy.threshold,
+            signer_set_digest: earnproof_shared::governance_signer_set_digest(
+                &env,
+                &proposal.policy.signers,
+            ),
+        };
+        env.storage().persistent().set(&snapshot_key, &snapshot);
         env.storage().persistent().extend_ttl(
             &key,
+            TTL_THRESHOLD_LEDGERS,
+            CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
+        );
+        env.storage().persistent().extend_ttl(
+            &snapshot_key,
             TTL_THRESHOLD_LEDGERS,
             CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
         );
@@ -920,6 +946,25 @@ impl ProtocolConfigContract {
         proposal
     }
 
+    /// Returns the immutable policy commitment captured at proposal creation.
+    /// `None` identifies a legacy proposal whose embedded policy remains
+    /// authoritative but predates explicit snapshot metadata.
+    pub fn get_critical_action_snapshot(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Option<GovernanceApprovalSnapshot> {
+        let key = DataKey::CriticalActionSnapshot(proposal_id);
+        let snapshot = env.storage().persistent().get(&key);
+        if snapshot.is_some() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
+            );
+        }
+        snapshot
+    }
+
     pub fn approve_critical_action(
         env: Env,
         proposal_id: BytesN<32>,
@@ -927,6 +972,7 @@ impl ProtocolConfigContract {
     ) -> Result<(), ContractError> {
         let mut proposal = Self::get_critical_action_proposal(env.clone(), proposal_id.clone())
             .ok_or(ContractError::ApprovalProposalNotFound)?;
+        Self::verify_approval_snapshot(&env, &proposal_id, &proposal)?;
         Self::ensure_proposal_live(&env, &proposal)?;
         Self::require_auth(&signer);
         if !proposal.policy.signers.contains(&signer) {
@@ -952,10 +998,16 @@ impl ProtocolConfigContract {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         let key = DataKey::CriticalActionProposal(proposal_id.clone());
-        if !env.storage().persistent().has(&key) {
-            return Err(ContractError::ApprovalProposalNotFound);
-        }
+        let proposal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::ApprovalProposalNotFound)?;
+        Self::verify_approval_snapshot(&env, &proposal_id, &proposal)?;
         env.storage().persistent().remove(&key);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CriticalActionSnapshot(proposal_id.clone()));
         CriticalActionCancelled {
             proposal_id,
             cancelled_by: admin,
@@ -968,6 +1020,7 @@ impl ProtocolConfigContract {
         Self::ensure_not_decommissioned(&env)?;
         let proposal = Self::get_critical_action_proposal(env.clone(), proposal_id.clone())
             .ok_or(ContractError::ApprovalProposalNotFound)?;
+        Self::verify_approval_snapshot(&env, &proposal_id, &proposal)?;
         Self::ensure_proposal_live(&env, &proposal)?;
         if proposal.approvals.len() < proposal.policy.threshold {
             return Err(ContractError::InsufficientApprovals);
@@ -1015,7 +1068,7 @@ impl ProtocolConfigContract {
             }
             CriticalAction::ApprovalPolicyUpdate(policy) => {
                 Self::validate_critical_action_policy(&policy)?;
-                Self::store_critical_action_policy_with_commitment(env.clone(), policy, commitment);
+                Self::store_critical_action_policy_with_commitment(env.clone(), policy, commitment)?;
             }
             CriticalAction::IssuerRegistryReplacement(_)
             | CriticalAction::ProtocolConfigReplacement(_) => {
@@ -1025,6 +1078,9 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .remove(&DataKey::CriticalActionProposal(proposal_id.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CriticalActionSnapshot(proposal_id.clone()));
         CriticalActionExecuted { proposal_id }.publish(&env);
         Ok(())
     }
@@ -1485,18 +1541,23 @@ impl ProtocolConfigContract {
         policy: CriticalActionPolicy,
     ) -> Result<(), ContractError> {
         let commitment = Self::commit(&env, policy.clone());
-        Self::store_critical_action_policy_with_commitment(env, policy, commitment);
-        Ok(())
+        Self::store_critical_action_policy_with_commitment(env, policy, commitment)
     }
 
     fn store_critical_action_policy_with_commitment(
         env: Env,
         policy: CriticalActionPolicy,
         commitment: BytesN<32>,
-    ) {
+    ) -> Result<(), ContractError> {
+        let version = Self::get_critical_policy_version(env.clone())
+            .checked_add(1)
+            .ok_or(ContractError::InvalidState)?;
         env.storage()
             .instance()
             .set(&DataKey::CriticalActionPolicy, &policy);
+        env.storage()
+            .instance()
+            .set(&DataKey::CriticalActionPolicyVersion, &version);
         Self::bump_config_version(env.clone());
         Self::append_config_history(
             env.clone(),
@@ -1509,6 +1570,7 @@ impl ProtocolConfigContract {
             signer_count: policy.signers.len(),
         }
         .publish(&env);
+        Ok(())
     }
 
     fn ensure_proposal_live(
@@ -1517,6 +1579,34 @@ impl ProtocolConfigContract {
     ) -> Result<(), ContractError> {
         if env.ledger().sequence() >= proposal.expires_at {
             return Err(ContractError::ApprovalProposalExpired);
+        }
+        Ok(())
+    }
+
+    fn verify_approval_snapshot(
+        env: &Env,
+        proposal_id: &BytesN<32>,
+        proposal: &CriticalActionProposal,
+    ) -> Result<(), ContractError> {
+        let Some(snapshot) = env
+            .storage()
+            .persistent()
+            .get::<_, GovernanceApprovalSnapshot>(&DataKey::CriticalActionSnapshot(
+                proposal_id.clone(),
+            ))
+        else {
+            return Ok(());
+        };
+        let signer_set_digest = earnproof_shared::governance_signer_set_digest(
+            env,
+            &proposal.policy.signers,
+        );
+        if snapshot.snapshot_version != GOVERNANCE_APPROVAL_SNAPSHOT_VERSION
+            || snapshot.policy_version == 0
+            || snapshot.threshold != proposal.policy.threshold
+            || snapshot.signer_set_digest != signer_set_digest
+        {
+            return Err(ContractError::InvalidState);
         }
         Ok(())
     }
@@ -2573,6 +2663,105 @@ mod test {
         assert!(client
             .get_critical_action_proposal(&changed_parameters)
             .is_some());
+    }
+
+    #[test]
+    fn proposal_captures_versioned_threshold_and_signer_commitment() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 2);
+        client.set_critical_action_policy(&policy);
+        let proposal_id = client.propose_critical_action(&CriticalAction::SchemaApproval(31));
+
+        let snapshot = client
+            .get_critical_action_snapshot(&proposal_id)
+            .unwrap();
+        assert_eq!(snapshot.snapshot_version, 1);
+        assert_eq!(snapshot.policy_version, 1);
+        assert_eq!(snapshot.threshold, 2);
+        assert_eq!(
+            snapshot.signer_set_digest,
+            earnproof_shared::governance_signer_set_digest(&env, &signers)
+        );
+
+        client.approve_critical_action(&proposal_id, &signers.get(0).unwrap());
+        client.approve_critical_action(&proposal_id, &signers.get(1).unwrap());
+        client.execute_critical_action(&proposal_id);
+        assert_eq!(client.get_critical_action_snapshot(&proposal_id), None);
+    }
+
+    #[test]
+    fn later_policy_change_cannot_weaken_pending_threshold() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 2);
+        client.set_critical_action_policy(&policy);
+        let pending = client.propose_critical_action(&CriticalAction::SchemaApproval(32));
+
+        let weaker = CriticalActionPolicy {
+            enabled: true,
+            threshold: 1,
+            signers: signers.clone(),
+        };
+        let policy_change =
+            client.propose_critical_action(&CriticalAction::ApprovalPolicyUpdate(weaker));
+        client.approve_critical_action(&policy_change, &signers.get(0).unwrap());
+        client.approve_critical_action(&policy_change, &signers.get(1).unwrap());
+        client.execute_critical_action(&policy_change);
+        assert_eq!(client.get_critical_policy_version(), 2);
+
+        client.approve_critical_action(&pending, &signers.get(0).unwrap());
+        assert_eq!(
+            client.try_execute_critical_action(&pending),
+            Err(Ok(ContractError::InsufficientApprovals))
+        );
+        client.approve_critical_action(&pending, &signers.get(1).unwrap());
+        client.execute_critical_action(&pending);
+        assert!(client.is_schema_version_approved(&32));
+    }
+
+    #[test]
+    fn snapshot_mismatch_fails_atomically() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 1);
+        client.set_critical_action_policy(&policy);
+        let proposal_id = client.propose_critical_action(&CriticalAction::SchemaApproval(33));
+        let mut snapshot = client
+            .get_critical_action_snapshot(&proposal_id)
+            .unwrap();
+        snapshot.threshold = 2;
+        env.as_contract(&client.address, || {
+            env.storage().persistent().set(
+                &DataKey::CriticalActionSnapshot(proposal_id.clone()),
+                &snapshot,
+            );
+        });
+
+        assert_eq!(
+            client.try_approve_critical_action(&proposal_id, &signers.get(0).unwrap()),
+            Err(Ok(ContractError::InvalidState))
+        );
+        assert!(client
+            .get_critical_action_proposal(&proposal_id)
+            .unwrap()
+            .approvals
+            .is_empty());
+    }
+
+    #[test]
+    fn policy_version_overflow_does_not_install_policy() {
+        let (env, client, _admin) = setup();
+        env.as_contract(&client.address, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::CriticalActionPolicyVersion, &u32::MAX);
+        });
+        let (policy, _) = enabled_policy(&env, 1);
+
+        assert_eq!(
+            client.try_set_critical_action_policy(&policy),
+            Err(Ok(ContractError::InvalidState))
+        );
+        assert!(!client.get_critical_action_policy().enabled);
+        assert_eq!(client.get_critical_policy_version(), u32::MAX);
     }
 
     #[test]

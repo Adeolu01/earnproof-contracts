@@ -376,7 +376,7 @@ impl InterfaceVersion {
 pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
 
 /// The interface version implemented by `protocol-config`.
-pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
+pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 2, 0);
 
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -877,6 +877,32 @@ pub struct CriticalActionProposal {
     pub approvals: Vec<Address>,
     pub created_at: u32,
     pub expires_at: u32,
+}
+
+/// Encoding version for approval-policy snapshots attached to proposals.
+pub const GOVERNANCE_APPROVAL_SNAPSHOT_VERSION: u32 = 1;
+
+/// Immutable policy metadata captured when a governance proposal is created.
+/// The proposal retains the full policy while this compact record gives
+/// clients a stable version and signer-set commitment to index.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceApprovalSnapshot {
+    pub snapshot_version: u32,
+    pub policy_version: u32,
+    pub threshold: u32,
+    pub signer_set_digest: BytesN<32>,
+}
+
+/// Commits to the exact, ordered signer vector used by a governance policy.
+/// Signer ordering is part of the canonical policy encoding.
+pub fn governance_signer_set_digest(env: &Env, signers: &Vec<Address>) -> BytesN<32> {
+    let preimage = (
+        Symbol::new(env, "gov_signers"),
+        GOVERNANCE_APPROVAL_SNAPSHOT_VERSION,
+        signers.clone(),
+    );
+    env.crypto().sha256(&preimage.to_xdr(env)).to_bytes()
 }
 
 /// One bounded, on-chain summary of a governance change, as stored in the
