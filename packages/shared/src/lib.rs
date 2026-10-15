@@ -83,6 +83,8 @@ pub struct MigrationStatus {
 
 /// Canonical configuration digest payload version.
 pub const CONFIG_DIGEST_VERSION: u32 = 1;
+/// Canonical encoding version for per-schema policy digests.
+pub const SCHEMA_POLICY_DIGEST_VERSION: u32 = 1;
 
 /// Version tag mixed into every computed genesis identifier so a future
 /// change to the derivation scheme is distinguishable from a collision.
@@ -230,6 +232,55 @@ pub struct DisputeFilingEligibility {
     pub closes_at: u64,
     pub evaluated_at: u64,
     pub status: DisputeFilingStatus,
+}
+
+/// Latest governed activation/deprecation timestamps for a schema version.
+/// Kept as a sidecar so legacy schema approval entries remain decodable.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaLifecyclePolicy {
+    pub activated_at: u64,
+    pub deprecated_at: u64,
+}
+
+/// Versioned schema-policy commitment returned to clients.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaPolicyDigest {
+    pub digest_version: u32,
+    pub config_version: u32,
+    pub schema_version: u32,
+    pub digest: BytesN<32>,
+}
+
+/// Hashes the canonical version-1 schema-policy tuple. Field order is part of
+/// the public encoding and must only change under a new digest version.
+pub fn compute_schema_policy_digest(
+    env: &Env,
+    schema_version: u32,
+    config_version: u32,
+    approved: bool,
+    lifecycle: &SchemaLifecyclePolicy,
+    policy: &SchemaPolicy,
+    payload_limit: u32,
+    rate_limit: &SchemaRateLimit,
+) -> BytesN<32> {
+    let payload = (
+        SCHEMA_POLICY_DIGEST_VERSION,
+        Symbol::new(env, "earnproof_schema_policy"),
+        schema_version,
+        config_version,
+        approved,
+        lifecycle.activated_at,
+        lifecycle.deprecated_at,
+        policy.proof_types.clone(),
+        policy.max_validity_seconds,
+        payload_limit,
+        rate_limit.max_registrations,
+        rate_limit.window_ledgers,
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
 }
 
 /// Immutable registration metadata kept separately from `ProofRecord` so
@@ -923,6 +974,7 @@ pub enum ConfigChangeCategory {
     SchemaDeprecation,
     SchemaPayloadLimit,
     SchemaPolicy,
+    SchemaRateLimit,
     CommitmentAlgorithmPolicy,
     ApprovalPolicyUpdate,
     DisputeFilingPolicy,

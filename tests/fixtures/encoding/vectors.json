@@ -49,5 +49,10 @@
     "laterVersions": "SHA-256 over canonical XDR tuple (earnproof_subject_nullifier, u32 domain version, issuer Address, purpose String, subject BytesN<32>)",
     "binding": "proof-registry stores domain_version and commitment together in SubjectNullifier"
   },
+  "schemaPolicyDigestV1": {
+    "encoding": "SHA-256 over canonical XDR tuple",
+    "fields": ["digest_version", "earnproof_schema_policy", "schema_version", "config_version", "approved", "activated_at", "deprecated_at", "proof_types", "max_validity_seconds", "payload_limit", "rate_max_registrations", "rate_window_ledgers"],
+    "boundary": "proof type order is preserved; all integers are unsigned XDR values"
+  },
   "invalid": ["empty string", "malformed hex", "wrong byte length", "signed or little-endian integer", "unpaired UTF-16 surrogate", "asset code with punctuation or whitespace", "issued asset with a contract issuer", "network passphrase not matching the current ledger", "empty, whitespace, or non-ASCII pseudonym domain"]
 }

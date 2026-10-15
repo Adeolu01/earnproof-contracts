@@ -18,7 +18,8 @@ use soroban_sdk::{Address, BytesN, Env, String, Symbol, TryFromVal, Val};
 
 use earnproof_shared::{
     compute_subject_nullifier_commitment, compute_subject_pseudonym_commitment,
-    UpgradeCompatibilityAttestation,
+    compute_schema_policy_digest, SchemaLifecyclePolicy, SchemaPolicy, SchemaRateLimit,
+    UpgradeCompatibilityAttestation, SCHEMA_POLICY_DIGEST_VERSION,
 };
 use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
 use proof_registry::{ProofRegistryContract, ProofRegistryContractClient};
@@ -60,6 +61,42 @@ fn subject_nullifier_domain_versions_preserve_legacy_and_prevent_collisions() {
     assert_ne!(
         legacy,
         compute_subject_nullifier_commitment(&env, &issuer, 2, &purpose, &subject).unwrap()
+    );
+}
+
+#[test]
+fn schema_policy_digest_matches_the_documented_canonical_xdr_tuple() {
+    let env = Env::default();
+    let lifecycle = SchemaLifecyclePolicy {
+        activated_at: 100,
+        deprecated_at: 0,
+    };
+    let policy = SchemaPolicy {
+        proof_types: soroban_sdk::vec![&env, 1_u32, 2_u32],
+        max_validity_seconds: 5_000,
+    };
+    let rate = SchemaRateLimit {
+        max_registrations: 25,
+        window_ledgers: 100,
+    };
+    let expected_payload = (
+        SCHEMA_POLICY_DIGEST_VERSION,
+        Symbol::new(&env, "earnproof_schema_policy"),
+        7_u32,
+        9_u32,
+        true,
+        100_u64,
+        0_u64,
+        policy.proof_types.clone(),
+        5_000_u64,
+        2_048_u32,
+        25_u32,
+        100_u32,
+    )
+        .to_xdr(&env);
+    assert_eq!(
+        compute_schema_policy_digest(&env, 7, 9, true, &lifecycle, &policy, 2_048, &rate),
+        env.crypto().sha256(&expected_payload).to_bytes()
     );
 }
 
