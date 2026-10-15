@@ -357,6 +357,7 @@ pub fn exercised_deployment() -> Deployment {
     let issuers_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuers_id);
     issuers.initialize(&admin);
+    issuers.set_role_activation_delay(&earnproof_shared::GovernanceRole::IssuerManagement, &10);
     issuers.grant_governance_role(
         &bytes32(&env, 0x21),
         &earnproof_shared::GovernanceRole::IssuerManagement,

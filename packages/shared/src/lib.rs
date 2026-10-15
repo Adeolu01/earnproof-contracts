@@ -373,7 +373,7 @@ impl InterfaceVersion {
 }
 
 /// The interface version implemented by `issuer-registry`.
-pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
 
 /// The interface version implemented by `protocol-config`.
 pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
@@ -388,6 +388,18 @@ pub enum GovernanceRole {
     DependencyManagement,
     UpgradeManagement,
     Recovery,
+}
+
+/// Maximum configurable delay between granting a governance role and its
+/// activation (approximately one week at five-second ledgers).
+pub const MAX_GOVERNANCE_ROLE_ACTIVATION_DELAY_LEDGERS: u32 = 120_960;
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceAssignmentState {
+    Pending,
+    Active,
+    Expired,
 }
 
 #[contracttype]
@@ -411,6 +423,16 @@ impl GovernanceRoleAssignment {
 
     pub fn is_pending_at(&self, ledger: u32) -> bool {
         ledger < self.activation_ledger
+    }
+
+    pub fn state_at(&self, ledger: u32) -> GovernanceAssignmentState {
+        if self.is_pending_at(ledger) {
+            GovernanceAssignmentState::Pending
+        } else if self.is_active_at(ledger) {
+            GovernanceAssignmentState::Active
+        } else {
+            GovernanceAssignmentState::Expired
+        }
     }
 }
 

@@ -82,6 +82,7 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 |-------|---------|-----------------|-------------------|------------|
 | Issuer Record | `Issuer(hash)` | `get_issuer(hash)` reads & extends | IssuerNotFound error | ✓ Yes |
 | Address → Issuer Mapping | `AddressIssuer(addr)` | `is_active_address(addr)`, `get_issuer_by_address(addr)` read & extend | Not found; returns false | ✓ Yes |
+| Governance Role Delay | `GovernanceRoleDelay(role)` | policy reads and admin writes | Returns `0` for legacy/default policy | ✓ Yes |
 
 **Persistent TTL Extensions**: 
 - `extend_issuer_ttl(hash)`: extends `Issuer(hash)` entry
@@ -92,6 +93,7 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
   - `update_issuer()`, `suspend_issuer()`, `reactivate_issuer()`, `revoke_issuer()`: extend Issuer entry
   - `rotate_issuer_address()`: extends both old entry (removed) and new entry
   - `get_issuer_by_address()`: extends AddressIssuer entry on read
+  - `set_role_activation_delay()`: stores and extends the per-role policy
 
 **Critical**: Both `Issuer(hash)` and `AddressIssuer(addr)` for a single issuer are extended together. If one expires, the other will too (same operation). Both must be present for `is_active_address()` to succeed.
 
