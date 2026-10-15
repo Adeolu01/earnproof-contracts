@@ -14,9 +14,12 @@
 
 use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{Address, BytesN, Env, Symbol, TryFromVal, Val};
+use soroban_sdk::{Address, BytesN, Env, String, Symbol, TryFromVal, Val};
 
-use earnproof_shared::UpgradeCompatibilityAttestation;
+use earnproof_shared::{
+    compute_subject_nullifier_commitment, compute_subject_pseudonym_commitment,
+    UpgradeCompatibilityAttestation,
+};
 use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
 use proof_registry::{ProofRegistryContract, ProofRegistryContractClient};
 use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
@@ -38,6 +41,26 @@ fn vector_hex(id: &str) -> &'static str {
         }
     }
     panic!("no fixture vector named {id} in vectors.tsv");
+}
+
+#[test]
+fn subject_nullifier_domain_versions_preserve_legacy_and_prevent_collisions() {
+    let env = Env::default();
+    let issuer = Address::from_str(
+        &env,
+        "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+    );
+    let purpose = String::from_str(&env, "credential-verification");
+    let subject = BytesN::from_array(&env, &[0x11; 32]);
+    let legacy = compute_subject_pseudonym_commitment(&env, &issuer, &purpose, &subject).unwrap();
+    assert_eq!(
+        compute_subject_nullifier_commitment(&env, &issuer, 1, &purpose, &subject),
+        Some(legacy.clone())
+    );
+    assert_ne!(
+        legacy,
+        compute_subject_nullifier_commitment(&env, &issuer, 2, &purpose, &subject).unwrap()
+    );
 }
 
 fn bytes_from_hex(env: &Env, hex: &str) -> BytesN<32> {

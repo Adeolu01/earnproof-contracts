@@ -153,6 +153,10 @@ pub fn proof_subject_pseudonym_key(env: &Env, id: &BytesN<32>) -> (Symbol, Bytes
     (Symbol::new(env, "ProofSubjectPseudonym"), id.clone())
 }
 
+pub fn proof_subject_nullifier_key(env: &Env, id: &BytesN<32>) -> (Symbol, BytesN<32>) {
+    (Symbol::new(env, "SubjectNullifier"), id.clone())
+}
+
 pub fn genesis_key() -> (Symbol,) {
     (symbol_short!("Genesis"),)
 }
