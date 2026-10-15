@@ -2,8 +2,9 @@
 
 use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
-    CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
-    SchemaPolicy, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
+    CriticalActionProposal, EmergencyAction, EmergencyActionProposal, EmergencyFastTrackPolicy,
+    GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope, SchemaPolicy,
+    EMERGENCY_FAST_TRACK_ENCODING_VERSION, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
     CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
     MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
     MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
@@ -50,6 +51,9 @@ enum DataKey {
     CriticalActionPolicy,
     CriticalActionProposal(BytesN<32>),
     CriticalActionNonce,
+    EmergencyFastTrackPolicy,
+    EmergencyActionProposal(BytesN<32>),
+    EmergencyActionNonce,
 }
 
 // ── admin transfer events ─────────────────────────────────────────────────────────
@@ -187,6 +191,39 @@ pub struct CriticalActionPolicySet {
     pub enabled: bool,
     pub threshold: u32,
     pub signer_count: u32,
+}
+
+#[contractevent]
+pub struct EmergencyFastTrackPolicySet {
+    pub enabled: bool,
+    pub threshold: u32,
+    pub guardian_count: u32,
+    pub max_lifetime_ledgers: u32,
+}
+
+#[contractevent]
+pub struct EmergencyActionProposed {
+    pub proposal_id: BytesN<32>,
+    pub proposer: Address,
+    pub expires_at: u32,
+}
+
+#[contractevent]
+pub struct EmergencyActionApproved {
+    pub proposal_id: BytesN<32>,
+    pub guardian: Address,
+}
+
+#[contractevent]
+pub struct EmergencyActionCancelled {
+    pub proposal_id: BytesN<32>,
+    pub cancelled_by: Address,
+}
+
+#[contractevent]
+pub struct EmergencyActionExecuted {
+    pub proposal_id: BytesN<32>,
+    pub reason_commitment: BytesN<32>,
 }
 
 // ── upgrade events ───────────────────────────────────────────────────────────
@@ -843,6 +880,232 @@ impl ProtocolConfigContract {
         Self::store_critical_action_policy(env, policy)
     }
 
+    pub fn get_emergency_policy(env: Env) -> EmergencyFastTrackPolicy {
+        Self::emergency_policy(&env)
+    }
+
+    /// Bootstraps the emergency policy. After normal threshold governance is
+    /// enabled, updates must use `CriticalAction::EmergencyPolicyUpdate`.
+    pub fn set_emergency_policy(
+        env: Env,
+        policy: EmergencyFastTrackPolicy,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if Self::critical_action_policy(&env).enabled {
+            return Err(ContractError::ThresholdApprovalRequired);
+        }
+        Self::validate_emergency_policy(&env, &policy)?;
+        Self::store_emergency_policy(env, policy)
+    }
+
+    pub fn propose_emergency_action(
+        env: Env,
+        action: EmergencyAction,
+        reason_commitment: BytesN<32>,
+        expires_at: u32,
+        proposer: Address,
+    ) -> Result<BytesN<32>, ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let policy = Self::emergency_policy(&env);
+        if !policy.enabled {
+            return Err(ContractError::InvalidState);
+        }
+        let admin = Self::get_admin(env.clone())?;
+        if proposer != admin && !policy.guardians.contains(&proposer) {
+            return Err(ContractError::Unauthorized);
+        }
+        Self::require_auth(&proposer);
+        if reason_commitment == BytesN::from_array(&env, &[0; 32]) {
+            return Err(ContractError::InvalidInput);
+        }
+        if action == EmergencyAction::ScopedPause(PauseScope::Global) {
+            return Err(ContractError::InvalidInput);
+        }
+        let created_at = env.ledger().sequence();
+        let latest = created_at
+            .checked_add(policy.max_lifetime_ledgers)
+            .ok_or(ContractError::InvalidTimingConfig)?;
+        if expires_at <= created_at || expires_at > latest {
+            return Err(ContractError::InvalidTimingConfig);
+        }
+        let nonce = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::EmergencyActionNonce)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(ContractError::InvalidState)?;
+        let proposal_id = Self::emergency_action_commitment(
+            &env,
+            &action,
+            &reason_commitment,
+            expires_at,
+            nonce,
+        );
+        let max_lifetime_ledgers = policy.max_lifetime_ledgers;
+        let proposal = EmergencyActionProposal {
+            action,
+            reason_commitment,
+            policy,
+            proposer: proposer.clone(),
+            approvals: Vec::new(&env),
+            created_at,
+            expires_at,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::EmergencyActionNonce, &nonce);
+        let key = DataKey::EmergencyActionProposal(proposal_id.clone());
+        env.storage().persistent().set(&key, &proposal);
+        env.storage().persistent().extend_ttl(
+            &key,
+            TTL_THRESHOLD_LEDGERS,
+            max_lifetime_ledgers + TTL_THRESHOLD_LEDGERS,
+        );
+        EmergencyActionProposed {
+            proposal_id: proposal_id.clone(),
+            proposer,
+            expires_at,
+        }
+        .publish(&env);
+        Ok(proposal_id)
+    }
+
+    pub fn get_emergency_proposal(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Option<EmergencyActionProposal> {
+        let key = DataKey::EmergencyActionProposal(proposal_id);
+        let proposal: Option<EmergencyActionProposal> = env.storage().persistent().get(&key);
+        if let Some(record) = &proposal {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                record.policy.max_lifetime_ledgers + TTL_THRESHOLD_LEDGERS,
+            );
+        }
+        proposal
+    }
+
+    pub fn approve_emergency_action(
+        env: Env,
+        proposal_id: BytesN<32>,
+        guardian: Address,
+    ) -> Result<(), ContractError> {
+        let mut proposal = Self::get_emergency_proposal(env.clone(), proposal_id.clone())
+            .ok_or(ContractError::ApprovalProposalNotFound)?;
+        Self::ensure_emergency_proposal_live(&env, &proposal)?;
+        Self::require_auth(&guardian);
+        let current = Self::emergency_policy(&env);
+        if !current.enabled
+            || !proposal.policy.guardians.contains(&guardian)
+            || !current.guardians.contains(&guardian)
+        {
+            return Err(ContractError::Unauthorized);
+        }
+        if proposal.approvals.contains(&guardian) {
+            return Err(ContractError::AlreadyExists);
+        }
+        proposal.approvals.push_back(guardian.clone());
+        env.storage().persistent().set(
+            &DataKey::EmergencyActionProposal(proposal_id.clone()),
+            &proposal,
+        );
+        EmergencyActionApproved {
+            proposal_id,
+            guardian,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn cancel_emergency_action(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        let key = DataKey::EmergencyActionProposal(proposal_id.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(ContractError::ApprovalProposalNotFound);
+        }
+        env.storage().persistent().remove(&key);
+        EmergencyActionCancelled {
+            proposal_id,
+            cancelled_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn execute_emergency_action(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let proposal = Self::get_emergency_proposal(env.clone(), proposal_id.clone())
+            .ok_or(ContractError::ApprovalProposalNotFound)?;
+        Self::ensure_emergency_proposal_live(&env, &proposal)?;
+        let current = Self::emergency_policy(&env);
+        let normal_threshold = Self::critical_action_policy(&env).threshold;
+        if !current.enabled || proposal.policy.threshold <= normal_threshold {
+            return Err(ContractError::InvalidApprovalPolicy);
+        }
+        let eligible = proposal
+            .approvals
+            .iter()
+            .filter(|guardian| current.guardians.contains(guardian))
+            .count() as u32;
+        if eligible < proposal.policy.threshold {
+            return Err(ContractError::InsufficientApprovals);
+        }
+        match proposal.action {
+            EmergencyAction::GlobalPause => {
+                if Self::is_paused(env.clone()) {
+                    return Err(ContractError::InvalidState);
+                }
+                env.storage().instance().set(&DataKey::Paused, &true);
+                Self::bump_config_version(env.clone());
+                Self::append_config_history(
+                    env.clone(),
+                    ConfigChangeCategory::PauseToggle,
+                    proposal.reason_commitment.clone(),
+                );
+                Paused { paused: true }.publish(&env);
+            }
+            EmergencyAction::ScopedPause(scope) => {
+                if Self::is_scope_paused(env.clone(), scope) {
+                    return Err(ContractError::InvalidState);
+                }
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::ScopedPause(scope), &true);
+                Self::bump_config_version(env.clone());
+                Self::append_config_history(
+                    env.clone(),
+                    ConfigChangeCategory::ScopedPause,
+                    proposal.reason_commitment.clone(),
+                );
+                ScopedPauseChanged {
+                    scope,
+                    paused: true,
+                }
+                .publish(&env);
+            }
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::EmergencyActionProposal(proposal_id.clone()));
+        EmergencyActionExecuted {
+            proposal_id,
+            reason_commitment: proposal.reason_commitment,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     pub fn propose_critical_action(
         env: Env,
         action: CriticalAction,
@@ -860,6 +1123,7 @@ impl ProtocolConfigContract {
                 | CriticalAction::SchemaDeprecation(_)
                 | CriticalAction::SchemaPayloadLimit(_, _)
                 | CriticalAction::ApprovalPolicyUpdate(_)
+                | CriticalAction::EmergencyPolicyUpdate(_)
         ) {
             return Err(ContractError::InvalidInput);
         }
@@ -1016,6 +1280,10 @@ impl ProtocolConfigContract {
             CriticalAction::ApprovalPolicyUpdate(policy) => {
                 Self::validate_critical_action_policy(&policy)?;
                 Self::store_critical_action_policy_with_commitment(env.clone(), policy, commitment);
+            }
+            CriticalAction::EmergencyPolicyUpdate(policy) => {
+                Self::validate_emergency_policy(&env, &policy)?;
+                Self::store_emergency_policy_with_commitment(env.clone(), policy, commitment)?;
             }
             CriticalAction::IssuerRegistryReplacement(_)
             | CriticalAction::ProtocolConfigReplacement(_) => {
@@ -1444,6 +1712,87 @@ impl ProtocolConfigContract {
             })
     }
 
+    fn emergency_policy(env: &Env) -> EmergencyFastTrackPolicy {
+        env.storage()
+            .instance()
+            .get(&DataKey::EmergencyFastTrackPolicy)
+            .unwrap_or(EmergencyFastTrackPolicy {
+                enabled: false,
+                threshold: 0,
+                guardians: Vec::new(env),
+                max_lifetime_ledgers: 0,
+            })
+    }
+
+    fn validate_emergency_policy(
+        env: &Env,
+        policy: &EmergencyFastTrackPolicy,
+    ) -> Result<(), ContractError> {
+        if !policy.enabled {
+            return if policy.threshold == 0
+                && policy.guardians.is_empty()
+                && policy.max_lifetime_ledgers == 0
+            {
+                Ok(())
+            } else {
+                Err(ContractError::InvalidApprovalPolicy)
+            };
+        }
+        if policy.guardians.is_empty()
+            || policy.guardians.len() > MAX_CRITICAL_ACTION_SIGNERS
+            || policy.threshold <= Self::critical_action_policy(env).threshold
+            || policy.threshold > policy.guardians.len()
+            || policy.max_lifetime_ledgers == 0
+            || policy.max_lifetime_ledgers > CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS
+        {
+            return Err(ContractError::InvalidApprovalPolicy);
+        }
+        for (index, guardian) in policy.guardians.iter().enumerate() {
+            if !earnproof_shared::is_valid_principal_address(&guardian) {
+                return Err(ContractError::InvalidApprovalPolicy);
+            }
+            for earlier in 0..index {
+                if policy.guardians.get(earlier as u32).unwrap() == guardian {
+                    return Err(ContractError::InvalidApprovalPolicy);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn store_emergency_policy(
+        env: Env,
+        policy: EmergencyFastTrackPolicy,
+    ) -> Result<(), ContractError> {
+        let commitment = Self::commit(&env, policy.clone());
+        Self::store_emergency_policy_with_commitment(env, policy, commitment)
+    }
+
+    fn store_emergency_policy_with_commitment(
+        env: Env,
+        policy: EmergencyFastTrackPolicy,
+        commitment: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        Self::validate_emergency_policy(&env, &policy)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::EmergencyFastTrackPolicy, &policy);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::EmergencyPolicyUpdate,
+            commitment,
+        );
+        EmergencyFastTrackPolicySet {
+            enabled: policy.enabled,
+            threshold: policy.threshold,
+            guardian_count: policy.guardians.len(),
+            max_lifetime_ledgers: policy.max_lifetime_ledgers,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     fn ensure_critical_action_policy_disabled(env: &Env) -> Result<(), ContractError> {
         if Self::critical_action_policy(env).enabled {
             Err(ContractError::ThresholdApprovalRequired)
@@ -1521,6 +1870,36 @@ impl ProtocolConfigContract {
         Ok(())
     }
 
+    fn ensure_emergency_proposal_live(
+        env: &Env,
+        proposal: &EmergencyActionProposal,
+    ) -> Result<(), ContractError> {
+        if env.ledger().sequence() >= proposal.expires_at {
+            return Err(ContractError::ApprovalProposalExpired);
+        }
+        Ok(())
+    }
+
+    fn emergency_action_commitment(
+        env: &Env,
+        action: &EmergencyAction,
+        reason_commitment: &BytesN<32>,
+        expires_at: u32,
+        nonce: u32,
+    ) -> BytesN<32> {
+        let preimage = (
+            Symbol::new(env, "emergency_v1"),
+            EMERGENCY_FAST_TRACK_ENCODING_VERSION,
+            env.ledger().network_id(),
+            env.current_contract_address(),
+            *action,
+            reason_commitment.clone(),
+            expires_at,
+            nonce,
+        );
+        env.crypto().sha256(&preimage.to_xdr(env)).to_bytes()
+    }
+
     fn critical_action_commitment(env: &Env, action: &CriticalAction, nonce: u32) -> BytesN<32> {
         let commitment = (
             Symbol::new(env, "critical_action_v1"),
@@ -1549,6 +1928,7 @@ mod test {
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
         ConfigChangeCategory, ContractError, CriticalAction, CriticalActionPolicy,
+        EmergencyAction, EmergencyFastTrackPolicy, PauseScope,
         CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
@@ -2520,6 +2900,209 @@ mod test {
             },
             signers,
         )
+    }
+
+    fn emergency_policy(env: &Env, threshold: u32) -> (EmergencyFastTrackPolicy, Vec<Address>) {
+        let guardians = Vec::from_array(
+            env,
+            [
+                Address::generate(env),
+                Address::generate(env),
+                Address::generate(env),
+            ],
+        );
+        (
+            EmergencyFastTrackPolicy {
+                enabled: true,
+                threshold,
+                guardians: guardians.clone(),
+                max_lifetime_ledgers: 20,
+            },
+            guardians,
+        )
+    }
+
+    #[test]
+    fn guardian_threshold_executes_only_a_scoped_pause() {
+        let (env, client, _admin) = setup();
+        let (policy, guardians) = emergency_policy(&env, 2);
+        client.set_emergency_policy(&policy);
+        let expires_at = env.ledger().sequence() + 10;
+        let proposal_id = client.propose_emergency_action(
+            &EmergencyAction::ScopedPause(PauseScope::Registration),
+            &bytes(&env, 0xA1),
+            &expires_at,
+            &guardians.get(0).unwrap(),
+        );
+
+        client.approve_emergency_action(&proposal_id, &guardians.get(0).unwrap());
+        assert_eq!(
+            client.try_execute_emergency_action(&proposal_id),
+            Err(Ok(ContractError::InsufficientApprovals))
+        );
+        client.approve_emergency_action(&proposal_id, &guardians.get(1).unwrap());
+        client.execute_emergency_action(&proposal_id);
+
+        assert!(client.is_scope_paused(&PauseScope::Registration));
+        assert!(!client.is_paused());
+        assert_eq!(client.get_emergency_proposal(&proposal_id), None);
+        assert_eq!(
+            client.try_execute_emergency_action(&proposal_id),
+            Err(Ok(ContractError::ApprovalProposalNotFound))
+        );
+    }
+
+    #[test]
+    fn emergency_proposal_validates_authority_reason_and_expiry_boundaries() {
+        let (env, client, _admin) = setup();
+        let (policy, guardians) = emergency_policy(&env, 2);
+        client.set_emergency_policy(&policy);
+        let now = env.ledger().sequence();
+        let outsider = Address::generate(&env);
+
+        assert_eq!(
+            client.try_propose_emergency_action(
+                &EmergencyAction::GlobalPause,
+                &bytes(&env, 0xA2),
+                &(now + 1),
+                &outsider,
+            ),
+            Err(Ok(ContractError::Unauthorized))
+        );
+        assert_eq!(
+            client.try_propose_emergency_action(
+                &EmergencyAction::GlobalPause,
+                &BytesN::from_array(&env, &[0; 32]),
+                &(now + 1),
+                &guardians.get(0).unwrap(),
+            ),
+            Err(Ok(ContractError::InvalidInput))
+        );
+        assert_eq!(
+            client.try_propose_emergency_action(
+                &EmergencyAction::ScopedPause(PauseScope::Global),
+                &bytes(&env, 0xA3),
+                &(now + 1),
+                &guardians.get(0).unwrap(),
+            ),
+            Err(Ok(ContractError::InvalidInput))
+        );
+        assert_eq!(
+            client.try_propose_emergency_action(
+                &EmergencyAction::GlobalPause,
+                &bytes(&env, 0xA4),
+                &now,
+                &guardians.get(0).unwrap(),
+            ),
+            Err(Ok(ContractError::InvalidTimingConfig))
+        );
+        assert_eq!(
+            client.try_propose_emergency_action(
+                &EmergencyAction::GlobalPause,
+                &bytes(&env, 0xA5),
+                &(now + policy.max_lifetime_ledgers + 1),
+                &guardians.get(0).unwrap(),
+            ),
+            Err(Ok(ContractError::InvalidTimingConfig))
+        );
+    }
+
+    #[test]
+    fn emergency_expiry_boundary_is_closed_and_state_is_unchanged() {
+        let (env, client, _admin) = setup();
+        let (policy, guardians) = emergency_policy(&env, 2);
+        client.set_emergency_policy(&policy);
+        let expires_at = env.ledger().sequence() + 2;
+        let proposal_id = client.propose_emergency_action(
+            &EmergencyAction::GlobalPause,
+            &bytes(&env, 0xA6),
+            &expires_at,
+            &guardians.get(0).unwrap(),
+        );
+        client.approve_emergency_action(&proposal_id, &guardians.get(0).unwrap());
+        client.approve_emergency_action(&proposal_id, &guardians.get(1).unwrap());
+        env.ledger().set_sequence_number(expires_at);
+
+        assert_eq!(
+            client.try_execute_emergency_action(&proposal_id),
+            Err(Ok(ContractError::ApprovalProposalExpired))
+        );
+        assert!(!client.is_paused());
+        assert!(client.get_emergency_proposal(&proposal_id).is_some());
+    }
+
+    #[test]
+    fn removed_guardian_cannot_approve_or_count_toward_execution() {
+        let (env, client, _admin) = setup();
+        let (policy, guardians) = emergency_policy(&env, 2);
+        client.set_emergency_policy(&policy);
+        let proposal_id = client.propose_emergency_action(
+            &EmergencyAction::GlobalPause,
+            &bytes(&env, 0xA7),
+            &(env.ledger().sequence() + 10),
+            &guardians.get(0).unwrap(),
+        );
+        client.approve_emergency_action(&proposal_id, &guardians.get(0).unwrap());
+
+        let replacement = EmergencyFastTrackPolicy {
+            enabled: true,
+            threshold: 2,
+            guardians: Vec::from_array(
+                &env,
+                [guardians.get(1).unwrap(), guardians.get(2).unwrap()],
+            ),
+            max_lifetime_ledgers: 20,
+        };
+        client.set_emergency_policy(&replacement);
+        assert_eq!(
+            client.try_approve_emergency_action(&proposal_id, &guardians.get(0).unwrap()),
+            Err(Ok(ContractError::Unauthorized))
+        );
+        client.approve_emergency_action(&proposal_id, &guardians.get(1).unwrap());
+        assert_eq!(
+            client.try_execute_emergency_action(&proposal_id),
+            Err(Ok(ContractError::InsufficientApprovals))
+        );
+        assert!(!client.is_paused());
+    }
+
+    #[test]
+    fn emergency_policy_changes_use_normal_governance_once_enabled() {
+        let (env, client, _admin) = setup();
+        let (initial, _) = emergency_policy(&env, 2);
+        client.set_emergency_policy(&initial);
+        let (normal, signers) = enabled_policy(&env, 1);
+        client.set_critical_action_policy(&normal);
+        let (replacement, _) = emergency_policy(&env, 3);
+
+        assert_eq!(
+            client.try_set_emergency_policy(&replacement),
+            Err(Ok(ContractError::ThresholdApprovalRequired))
+        );
+        let proposal_id = client.propose_critical_action(
+            &CriticalAction::EmergencyPolicyUpdate(replacement.clone()),
+        );
+        client.approve_critical_action(&proposal_id, &signers.get(0).unwrap());
+        client.execute_critical_action(&proposal_id);
+        assert_eq!(client.get_emergency_policy(), replacement);
+    }
+
+    #[test]
+    fn emergency_threshold_must_be_stronger_than_normal_threshold() {
+        let (env, client, _admin) = setup();
+        let (normal, signers) = enabled_policy(&env, 2);
+        client.set_critical_action_policy(&normal);
+        let (not_stronger, _) = emergency_policy(&env, 2);
+        let proposal_id = client.propose_critical_action(
+            &CriticalAction::EmergencyPolicyUpdate(not_stronger),
+        );
+        client.approve_critical_action(&proposal_id, &signers.get(0).unwrap());
+        client.approve_critical_action(&proposal_id, &signers.get(1).unwrap());
+        assert_eq!(
+            client.try_execute_critical_action(&proposal_id),
+            Err(Ok(ContractError::InvalidApprovalPolicy))
+        );
+        assert!(!client.get_emergency_policy().enabled);
     }
 
     #[test]
