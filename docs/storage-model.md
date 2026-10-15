@@ -83,6 +83,10 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 | Issuer Record | `Issuer(hash)` | `get_issuer(hash)` reads & extends | IssuerNotFound error | ✓ Yes |
 | Address → Issuer Mapping | `AddressIssuer(addr)` | `is_active_address(addr)`, `get_issuer_by_address(addr)` read & extend | Not found; returns false | ✓ Yes |
 
+| Current assurance tier | `IssuerAssurance(hash)` | governed writes and public reads extend | Returns `None` for legacy issuers | Yes |
+| Assurance history | `IssuerAssuranceHistory(hash, slot)` | bounded ring, direct sequence reads extend | Missing or overwritten sequence returns `None` | Yes |
+| Assurance sequence | `IssuerAssuranceSequence(hash)` | advances only after validated changes | Missing means no assurance commitment | Yes |
+
 **Persistent TTL Extensions**: 
 - `extend_issuer_ttl(hash)`: extends `Issuer(hash)` entry
 - `extend_address_ttl(addr)`: extends `AddressIssuer(addr)` entry
@@ -94,6 +98,11 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
   - `get_issuer_by_address()`: extends AddressIssuer entry on read
 
 **Critical**: Both `Issuer(hash)` and `AddressIssuer(addr)` for a single issuer are extended together. If one expires, the other will too (same operation). Both must be present for `is_active_address()` to succeed.
+
+Issuer assurance is an additive version-1 sidecar. It stores only a numeric
+tier, version, effective ledger, and sequence; accreditation documents and
+their private contents remain off-chain. The 16-entry ring is chronological,
+replay-safe, and never rewrites `IssuerRecord` or an existing proof binding.
 
 ---
 
