@@ -93,6 +93,7 @@ const PROTOCOL_CONFIG_EVENTS: &[&str] = &[
     "unpaused",
     "schema-approved",
     "schema-deprecated",
+    "schema-deprecated-with-replacement",
     "schema-predecessor-set",
 ];
 
