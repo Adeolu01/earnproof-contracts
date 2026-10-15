@@ -917,6 +917,32 @@ pub fn governance_action_commitment(
     env.crypto().sha256(&preimage.to_xdr(env)).to_bytes()
 }
 
+/// Encoding version for approval-policy snapshots attached to proposals.
+pub const GOVERNANCE_APPROVAL_SNAPSHOT_VERSION: u32 = 1;
+
+/// Immutable policy metadata captured when a governance proposal is created.
+/// The proposal retains the full policy while this compact record gives
+/// clients a stable version and signer-set commitment to index.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceApprovalSnapshot {
+    pub snapshot_version: u32,
+    pub policy_version: u32,
+    pub threshold: u32,
+    pub signer_set_digest: BytesN<32>,
+}
+
+/// Commits to the exact, ordered signer vector used by a governance policy.
+/// Signer ordering is part of the canonical policy encoding.
+pub fn governance_signer_set_digest(env: &Env, signers: &Vec<Address>) -> BytesN<32> {
+    let preimage = (
+        Symbol::new(env, "gov_signers"),
+        GOVERNANCE_APPROVAL_SNAPSHOT_VERSION,
+        signers.clone(),
+    );
+    env.crypto().sha256(&preimage.to_xdr(env)).to_bytes()
+}
+
 /// One bounded, on-chain summary of a governance change, as stored in the
 /// change-history ring.
 #[contracttype]
