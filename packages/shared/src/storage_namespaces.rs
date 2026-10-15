@@ -49,7 +49,7 @@ pub const CONTRACTS: [&str; 3] = ["issuer-registry", "proof-registry", "protocol
 /// Adding a row here is the second half of adding a storage key; the first is
 /// adding the `DataKey` variant. Doing one without the other fails the tests in
 /// `tests/storage-keys/`.
-pub const STORAGE_NAMESPACES: [StorageNamespace; 59] = [
+pub const STORAGE_NAMESPACES: [StorageNamespace; 68] = [
     StorageNamespace {
         contract: "issuer-registry",
         namespace: "ActiveIssuerCount",
@@ -211,6 +211,30 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 59] = [
         owner: "deployment operator",
     },
     StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "PendingAdmin",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "Address",
+        owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "PendingAdminExpiresAt",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
+        owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "PendingAdminNominatedAt",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
+        owner: "deployment operator",
+    },
+    StorageNamespace {
         contract: "proof-registry",
         namespace: "AllowedWasm",
         arity: 1,
@@ -296,6 +320,30 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 59] = [
         arity: 0,
         class: StorageClass::Instance,
         value: "MigrationStatus",
+        owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
+        namespace: "PendingAdmin",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "Address",
+        owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
+        namespace: "PendingAdminExpiresAt",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
+        owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
+        namespace: "PendingAdminNominatedAt",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
         owner: "deployment operator",
     },
     StorageNamespace {
@@ -456,6 +504,30 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 59] = [
         arity: 0,
         class: StorageClass::Instance,
         value: "bool",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "PendingAdmin",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "Address",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "PendingAdminExpiresAt",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "PendingAdminNominatedAt",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
         owner: "protocol operator",
     },
     StorageNamespace {

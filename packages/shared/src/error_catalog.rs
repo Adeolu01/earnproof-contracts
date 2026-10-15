@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 59] = [
+pub const ERROR_CATALOG: [ErrorSpec; 60] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -263,6 +263,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 59] = [
         remediation: "Bind a dependency whose interface version is compatible: same major and at least the minor and patch the consumer requires. Read the accepted version from the consumer before retrying.",
         http_status: 400,
         client_message: "Incompatible dependency version",
+    },
+    ErrorSpec {
+        code: 63,
+        name: "AdminNominationExpired",
+        enum_name: "ContractError",
+        domain: Domain::Common,
+        status: Status::Returned,
+        cause: "An administrator transfer was accepted at or after its exclusive expiry ledger, or a legacy nomination has no expiry metadata.",
+        retry: Retry::AfterOperatorAction,
+        remediation: "Have the current administrator create a fresh nomination, then accept it before the reported expiry ledger.",
+        http_status: 409,
+        client_message: "Administrator nomination has expired",
     },
     ErrorSpec {
         code: 64,

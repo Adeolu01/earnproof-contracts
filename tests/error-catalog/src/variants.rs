@@ -84,6 +84,11 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
         ),
         (
             "ContractError",
+            "AdminNominationExpired",
+            ContractError::AdminNominationExpired as u32,
+        ),
+        (
+            "ContractError",
             "ProtocolPaused",
             ContractError::ProtocolPaused as u32
         ),
