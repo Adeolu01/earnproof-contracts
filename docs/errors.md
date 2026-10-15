@@ -138,6 +138,7 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 322 | `CrossIssuerSupersession` | `ProofError` | proof-registry | returned | never | 403 |
 | 323 | `PredecessorNotFound` | `ProofError` | proof-registry | returned | after-caller-change | 404 |
 | 324 | `TooManySuccessors` | `ProofError` | proof-registry | returned | never | 400 |
+| 326 | `UnsupportedNullifierDomain` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 
 ## Details
 ### 1 - `AlreadyInitialized`
@@ -788,5 +789,16 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Remediation: A predecessor can only have a bounded number of successors.
 - Suggested HTTP status: 400
 - Client message: "Too many successors"
+
+### 326 - `UnsupportedNullifierDomain`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-operator-action
+- Cause: The proof supplied a subject-nullifier domain version that protocol governance does not support.
+- Remediation: Query `get_nullifier_domain_versions` and submit a nullifier derived under a currently supported version.
+- Suggested HTTP status: 400
+- Client message: "Unsupported nullifier domain version"
 
 <!-- END GENERATED -->

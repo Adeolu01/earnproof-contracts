@@ -101,6 +101,8 @@ pub const DEFAULT_SCHEMA_RATE_LIMIT: u32 = u32::MAX;
 pub const MAX_SCHEMA_VALIDITY_SECONDS: u64 = 3_153_600_000;
 /// Maximum number of numeric proof types allowed in one schema policy.
 pub const MAX_SCHEMA_PROOF_TYPES: u32 = 16;
+/// Maximum number of nullifier domain versions governance may keep indexed.
+pub const MAX_NULLIFIER_DOMAIN_VERSIONS: u32 = 16;
 /// Compatibility proof type used by legacy registration entry points.
 pub const LEGACY_PROOF_TYPE: u32 = 0;
 /// Stable commitment algorithm identifiers; zero retains the legacy behavior.
@@ -376,7 +378,7 @@ impl InterfaceVersion {
 pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
 
 /// The interface version implemented by `protocol-config`.
-pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
+pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 2, 0);
 
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -618,6 +620,9 @@ pub enum ProofError {
     PredecessorNotFound = 323,
     /// The predecessor already has the maximum number of successors.
     TooManySuccessors = 324,
+    /// The requested subject-nullifier domain version is not currently
+    /// supported by protocol governance.
+    UnsupportedNullifierDomain = 326,
 }
 
 /// Versioned asset identifier accepted by context-aware proof registration.
@@ -779,6 +784,61 @@ pub fn compute_subject_pseudonym_commitment(
     Some(env.crypto().sha256(&preimage).to_bytes())
 }
 
+/// A proof's opaque subject nullifier together with the governed derivation
+/// domain version used by the issuer. The raw subject identifier is never
+/// stored.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubjectNullifier {
+    pub domain_version: u32,
+    pub commitment: BytesN<32>,
+}
+
+/// Computes a versioned subject-nullifier commitment. Version 1 delegates to
+/// the legacy pseudonym derivation byte-for-byte so existing commitments remain
+/// stable. Later versions use an XDR-encoded, version-tagged domain.
+pub fn compute_subject_nullifier_commitment(
+    env: &Env,
+    issuer_address: &Address,
+    domain_version: u32,
+    domain: &String,
+    subject_pseudonym: &BytesN<32>,
+) -> Option<BytesN<32>> {
+    if domain_version == 0 {
+        return None;
+    }
+    if domain_version == 1 {
+        return compute_subject_pseudonym_commitment(
+            env,
+            issuer_address,
+            domain,
+            subject_pseudonym,
+        );
+    }
+    if !is_valid_account_address(issuer_address) {
+        return None;
+    }
+    let domain_bytes = domain.to_bytes();
+    let domain_len = domain_bytes.len();
+    if domain_len == 0 || domain_len > 64 {
+        return None;
+    }
+    for index in 0..domain_len {
+        if !(0x21..=0x7e).contains(&domain_bytes.get(index)?) {
+            return None;
+        }
+    }
+    let payload = (
+        Symbol::new(env, "earnproof_subject_nullifier"),
+        domain_version,
+        issuer_address.clone(),
+        domain.clone(),
+        subject_pseudonym.clone(),
+    )
+        .to_xdr(env);
+    Some(env.crypto().sha256(&payload).to_bytes())
+}
+
 /// Interprets the all-zero commitment sentinel as explicit absence.
 pub fn optional_subject_pseudonym_commitment(commitment: &BytesN<32>) -> Option<BytesN<32>> {
     if commitment.to_array() == [0; 32] {
@@ -814,6 +874,7 @@ pub enum ConfigChangeCategory {
     SchemaPolicy,
     CommitmentAlgorithmPolicy,
     ApprovalPolicyUpdate,
+    NullifierDomainPolicy,
 }
 
 /// Category of a protocol mutation that may require threshold approval.
@@ -846,12 +907,8 @@ impl CriticalAction {
             Self::SchemaApproval(_) => CriticalActionCategory::SchemaApproval,
             Self::SchemaDeprecation(_) => CriticalActionCategory::SchemaDeprecation,
             Self::SchemaPayloadLimit(_, _) => CriticalActionCategory::SchemaPayloadLimit,
-            Self::IssuerRegistryReplacement(_) => {
-                CriticalActionCategory::IssuerRegistryReplacement
-            }
-            Self::ProtocolConfigReplacement(_) => {
-                CriticalActionCategory::ProtocolConfigReplacement
-            }
+            Self::IssuerRegistryReplacement(_) => CriticalActionCategory::IssuerRegistryReplacement,
+            Self::ProtocolConfigReplacement(_) => CriticalActionCategory::ProtocolConfigReplacement,
             Self::ApprovalPolicyUpdate(_) => CriticalActionCategory::ApprovalPolicyUpdate,
         }
     }
@@ -1746,6 +1803,31 @@ mod proof_context_tests {
             &BytesN::from_array(&env, &[0x33; 32]),
         )
         .is_none());
+    }
+
+    #[test]
+    fn nullifier_domain_versions_preserve_v1_and_separate_later_versions() {
+        let env = Env::default();
+        let issuer = Address::from_str(&env, ISSUER);
+        let domain = String::from_str(&env, "credential-verification");
+        let pseudonym = BytesN::from_array(&env, &[0x42; 32]);
+        let legacy = compute_subject_pseudonym_commitment(&env, &issuer, &domain, &pseudonym)
+            .expect("legacy commitment");
+        assert_eq!(
+            compute_subject_nullifier_commitment(&env, &issuer, 1, &domain, &pseudonym),
+            Some(legacy.clone())
+        );
+        let v2 = compute_subject_nullifier_commitment(&env, &issuer, 2, &domain, &pseudonym)
+            .expect("v2 commitment");
+        assert_ne!(legacy, v2);
+        assert_eq!(
+            v2,
+            compute_subject_nullifier_commitment(&env, &issuer, 2, &domain, &pseudonym)
+                .expect("deterministic v2 commitment")
+        );
+        assert!(
+            compute_subject_nullifier_commitment(&env, &issuer, 0, &domain, &pseudonym).is_none()
+        );
     }
 }
 

@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 59] = [
+pub const ERROR_CATALOG: [ErrorSpec; 60] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -863,6 +863,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 59] = [
         remediation: "A predecessor can only have a bounded number of successors.",
         http_status: 400,
         client_message: "Too many successors",
+    },
+    ErrorSpec {
+        code: 326,
+        name: "UnsupportedNullifierDomain",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "The proof supplied a subject-nullifier domain version that protocol governance does not support.",
+        retry: Retry::AfterOperatorAction,
+        remediation: "Query get_nullifier_domain_versions and submit a nullifier derived under a currently supported version.",
+        http_status: 400,
+        client_message: "Unsupported nullifier domain version",
     },
 ];
 

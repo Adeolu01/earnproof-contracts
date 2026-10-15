@@ -9,7 +9,7 @@ use earnproof_shared::{
     DisputeActorClass, DisputeRecord, DisputeStatus, GenesisRecord, InterfaceVersion,
     MigrationStatus, PauseScope, ProofError, ProofPayloadRecord, ProofRecord,
     ProofRegistrationInput, ProofStatus, ProofValidity, ProofValidityDetails, SchemaRateLimit,
-    SchemaRateLimitUsage, TtlStatus, UpgradeApproval, UpgradeApprovalMetadata,
+    SchemaRateLimitUsage, SubjectNullifier, TtlStatus, UpgradeApproval, UpgradeApprovalMetadata,
     UpgradeApprovalRecord, UpgradeHistoryRecord, UpgradeReceipt, MAX_MIGRATION_BATCH,
     MAX_PROOF_BATCH_SIZE, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
     UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
@@ -34,6 +34,7 @@ pub trait ProtocolConfigInterface {
     fn is_proof_type_approved(env: Env, proof_type: BytesN<32>) -> bool;
     fn get_schema_payload_limit(env: Env, version: u32) -> u32;
     fn get_schema_rate_limit(env: Env, version: u32) -> SchemaRateLimit;
+    fn is_nullifier_domain_supported(env: Env, domain_version: u32) -> bool;
     fn interface_version(env: Env) -> InterfaceVersion;
 }
 
@@ -106,6 +107,8 @@ enum DataKey {
     UpgradeHistoryCount,
     /// One upgrade history log entry, keyed by its index.
     UpgradeHistory(u32),
+    /// Versioned, opaque subject-nullifier commitment bound to one proof.
+    SubjectNullifier(BytesN<32>),
 }
 
 #[contractevent]
@@ -653,6 +656,68 @@ impl ProofRegistryContract {
         }
         .publish(&env);
         Ok(())
+    }
+
+    /// Atomically registers a proof and binds its opaque subject nullifier to
+    /// the governed derivation-domain version used by the issuer.
+    pub fn register_proof_with_nullifier(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+        commitment_hash: BytesN<32>,
+        issuer_address: Address,
+        schema_version: u32,
+        expires_at: u64,
+        predecessor_id_hash: Option<BytesN<32>>,
+        proof_type: BytesN<32>,
+        nullifier: SubjectNullifier,
+    ) -> Result<(), ProofError> {
+        if nullifier.domain_version == 0
+            || nullifier.commitment == BytesN::from_array(&env, &[0; 32])
+        {
+            return Err(ProofError::MalformedInput);
+        }
+        let protocol_config =
+            Self::get_protocol_config(env.clone()).map_err(|_| ProofError::ProofNotFound)?;
+        if !ProtocolConfigContractClient::new(&env, &protocol_config)
+            .is_nullifier_domain_supported(&nullifier.domain_version)
+        {
+            return Err(ProofError::UnsupportedNullifierDomain);
+        }
+        Self::register_proof(
+            env.clone(),
+            proof_id_hash.clone(),
+            commitment_hash,
+            issuer_address,
+            schema_version,
+            expires_at,
+            predecessor_id_hash,
+            proof_type,
+        )?;
+        let key = DataKey::SubjectNullifier(proof_id_hash);
+        env.storage().persistent().set(&key, &nullifier);
+        Self::extend_proof_key_ttl(env, &key);
+        Ok(())
+    }
+
+    pub fn get_proof_subject_nullifier(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+    ) -> Result<SubjectNullifier, ProofError> {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Proof(proof_id_hash.clone()))
+        {
+            return Err(ProofError::ProofNotFound);
+        }
+        let key = DataKey::SubjectNullifier(proof_id_hash);
+        let nullifier = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ProofError::ProofNotFound)?;
+        Self::extend_proof_key_ttl(env, &key);
+        Ok(nullifier)
     }
 
     /// Registers a proof exactly like [`Self::register_proof`], plus an
@@ -2587,7 +2652,8 @@ mod test {
     use super::{DataKey, ProofRegistryContract, ProofRegistryContractClient};
     use earnproof_shared::{
         DisputeActorClass, DisputeStatus, PauseScope, ProofError, ProofRecord, ProofStatus,
-        ProofValidity, MAX_PROOF_BATCH_SIZE, TTL_THRESHOLD_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
+        ProofValidity, SubjectNullifier, MAX_PROOF_BATCH_SIZE, TTL_THRESHOLD_LEDGERS,
+        UPGRADE_TIMELOCK_LEDGERS,
     };
     use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
     use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
@@ -2671,6 +2737,52 @@ mod test {
         assert_eq!(client.get_issuer_registry(), issuer_registry_id);
         assert!(client.is_valid_proof(&proof_id));
         assert!(!client.is_revoked(&proof_id));
+    }
+
+    #[test]
+    fn registers_versioned_subject_nullifier_atomically() {
+        let (env, client, protocol_config, _issuer_registry, _issuer_registry_id) = setup();
+        let issuer = Address::from_str(&env, ISSUER);
+        protocol_config.set_nullifier_domain_version(&2, &true);
+        let proof_id = bytes(&env, 0xa1);
+        let nullifier = SubjectNullifier {
+            domain_version: 2,
+            commitment: bytes(&env, 0xa2),
+        };
+        client.register_proof_with_nullifier(
+            &proof_id,
+            &bytes(&env, 0xa3),
+            &issuer,
+            &1,
+            &2_000,
+            &None,
+            &bytes(&env, 1),
+            &nullifier,
+        );
+        assert_eq!(client.get_proof_subject_nullifier(&proof_id), nullifier);
+
+        protocol_config.set_nullifier_domain_version(&2, &false);
+        let rejected_id = bytes(&env, 0xa4);
+        assert_eq!(
+            client.try_register_proof_with_nullifier(
+                &rejected_id,
+                &bytes(&env, 0xa5),
+                &issuer,
+                &1,
+                &2_000,
+                &None,
+                &bytes(&env, 1),
+                &SubjectNullifier {
+                    domain_version: 2,
+                    commitment: bytes(&env, 0xa6),
+                },
+            ),
+            Err(Ok(ProofError::UnsupportedNullifierDomain))
+        );
+        assert_eq!(
+            client.try_get_proof(&rejected_id),
+            Err(Ok(ProofError::ProofNotFound))
+        );
     }
 
     #[test]

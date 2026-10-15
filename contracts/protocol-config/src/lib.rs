@@ -3,11 +3,11 @@
 use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
     CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
-    SchemaPolicy, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
-    CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
+    SchemaPolicy, CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS,
+    DEFAULT_SCHEMA_PAYLOAD_LIMIT, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
     MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
-    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
-    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
+    MAX_NULLIFIER_DOMAIN_VERSIONS, MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES,
+    MAX_SCHEMA_VALIDITY_SECONDS, MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
     SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
@@ -50,6 +50,8 @@ enum DataKey {
     CriticalActionPolicy,
     CriticalActionProposal(BytesN<32>),
     CriticalActionNonce,
+    SubjectNullifierDomain(u32),
+    SubjectNullifierDomains,
 }
 
 // ── admin transfer events ─────────────────────────────────────────────────────────
@@ -160,6 +162,12 @@ pub struct SchemaPayloadLimitSet {
 }
 
 #[contractevent]
+pub struct NullifierDomainVersionSet {
+    pub domain_version: u32,
+    pub supported: bool,
+}
+
+#[contractevent]
 pub struct CriticalActionProposed {
     pub proposal_id: BytesN<32>,
     pub proposer: Address,
@@ -248,6 +256,13 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &1_u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::SubjectNullifierDomain(1), &true);
+        env.storage().instance().set(
+            &DataKey::SubjectNullifierDomains,
+            &soroban_sdk::vec![&env, 1_u32],
+        );
         let genesis = GenesisRecord {
             genesis_id: earnproof_shared::compute_genesis_id(&env, "earnproof_protocol_config"),
             initialized_at_ledger: env.ledger().sequence(),
@@ -563,7 +578,9 @@ impl ProtocolConfigContract {
 
         let existing = Self::stored_predecessor(env.clone(), version);
         if existing.is_some_and(|stored| stored != predecessor)
-            || (existing.is_none() && predecessor != 0 && Self::schema_version_exists(env.clone(), version))
+            || (existing.is_none()
+                && predecessor != 0
+                && Self::schema_version_exists(env.clone(), version))
         {
             return Err(ContractError::InvalidState);
         }
@@ -581,9 +598,11 @@ impl ProtocolConfigContract {
         if predecessor != 0 {
             let key = DataKey::SchemaPredecessor(version);
             env.storage().persistent().set(&key, &predecessor);
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
             SchemaPredecessorSet {
                 version,
                 predecessor,
@@ -687,7 +706,10 @@ impl ProtocolConfigContract {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_nonzero_version(version)?;
-        if env.storage().persistent().has(&DataKey::SchemaVersion(version))
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::SchemaVersion(version))
             || proof_types.is_empty()
             || proof_types.len() > MAX_SCHEMA_PROOF_TYPES
             || max_validity_seconds == 0
@@ -791,6 +813,78 @@ impl ProtocolConfigContract {
             .instance()
             .get(&DataKey::ConfigVersion)
             .unwrap_or(0)
+    }
+
+    /// Admin-only: enable or disable a versioned subject-nullifier derivation
+    /// domain. Version zero is reserved and cannot be configured.
+    pub fn set_nullifier_domain_version(
+        env: Env,
+        domain_version: u32,
+        supported: bool,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if domain_version == 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        let key = DataKey::SubjectNullifierDomain(domain_version);
+        let known = env.storage().instance().has(&key);
+        if !known && !supported {
+            return Err(ContractError::InvalidInput);
+        }
+        if !known {
+            let mut versions: Vec<u32> = env
+                .storage()
+                .instance()
+                .get(&DataKey::SubjectNullifierDomains)
+                .unwrap_or_else(|| soroban_sdk::vec![&env, 1_u32]);
+            if versions.len() >= MAX_NULLIFIER_DOMAIN_VERSIONS {
+                return Err(ContractError::InvalidInput);
+            }
+            versions.push_back(domain_version);
+            env.storage()
+                .instance()
+                .set(&DataKey::SubjectNullifierDomains, &versions);
+        }
+        env.storage().instance().set(&key, &supported);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::NullifierDomainPolicy,
+            Self::commit(&env, (domain_version, supported)),
+        );
+        NullifierDomainVersionSet {
+            domain_version,
+            supported,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn is_nullifier_domain_supported(env: Env, domain_version: u32) -> bool {
+        domain_version != 0
+            && env
+                .storage()
+                .instance()
+                .get(&DataKey::SubjectNullifierDomain(domain_version))
+                .unwrap_or(false)
+    }
+
+    /// Returns supported versions in their stable first-governed order.
+    pub fn get_nullifier_domain_versions(env: Env) -> Vec<u32> {
+        let versions: Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SubjectNullifierDomains)
+            .unwrap_or_else(|| soroban_sdk::vec![&env, 1_u32]);
+        let mut supported = Vec::new(&env);
+        for version in versions.iter() {
+            if Self::is_nullifier_domain_supported(env.clone(), version) {
+                supported.push_back(version);
+            }
+        }
+        supported
     }
 
     // ── schema payload size limits ───────────────────────────────────────────
@@ -1401,15 +1495,21 @@ impl ProtocolConfigContract {
         let key = DataKey::SchemaPredecessor(version);
         let predecessor = env.storage().persistent().get(&key);
         if predecessor.is_some() {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
         }
         predecessor
     }
 
     fn schema_version_exists(env: Env, version: u32) -> bool {
-        version != 0 && env.storage().persistent().has(&DataKey::SchemaVersion(version))
+        version != 0
+            && env
+                .storage()
+                .persistent()
+                .has(&DataKey::SchemaVersion(version))
     }
 
     fn lineage_reaches(env: Env, start: u32, target: u32) -> bool {
@@ -1593,6 +1693,60 @@ mod test {
         assert!(!client.is_schema_version_approved(&1));
         // contract version initialized to 1
         assert_eq!(client.get_contract_version(), 1);
+        assert!(client.is_nullifier_domain_supported(&1));
+        assert_eq!(
+            client.get_nullifier_domain_versions(),
+            soroban_sdk::vec![&_env, 1]
+        );
+    }
+
+    #[test]
+    fn nullifier_domain_versions_are_governed_and_bounded() {
+        let (_env, client, _admin) = setup();
+        let before = client.get_config_version();
+        client.set_nullifier_domain_version(&2, &true);
+        assert!(client.is_nullifier_domain_supported(&2));
+        assert_eq!(
+            client.get_nullifier_domain_versions(),
+            soroban_sdk::vec![&_env, 1, 2]
+        );
+        client.set_nullifier_domain_version(&2, &false);
+        assert!(!client.is_nullifier_domain_supported(&2));
+        assert_eq!(
+            client.get_nullifier_domain_versions(),
+            soroban_sdk::vec![&_env, 1]
+        );
+        assert_eq!(client.get_config_version(), before + 2);
+
+        assert_eq!(
+            client.try_set_nullifier_domain_version(&0, &true),
+            Err(Ok(ContractError::InvalidInput))
+        );
+        assert_eq!(
+            client.try_set_nullifier_domain_version(&3, &false),
+            Err(Ok(ContractError::InvalidInput))
+        );
+        assert_eq!(client.get_config_version(), before + 2);
+
+        for version in 3_u32..=16 {
+            client.set_nullifier_domain_version(&version, &true);
+        }
+        assert_eq!(
+            client.try_set_nullifier_domain_version(&17, &true),
+            Err(Ok(ContractError::InvalidInput))
+        );
+        assert!(!client.is_nullifier_domain_supported(&17));
+    }
+
+    #[test]
+    fn nullifier_domain_policy_requires_admin_auth() {
+        let (env, client, _admin) = setup();
+        env.set_auths(&[]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.set_nullifier_domain_version(&2, &true);
+        }));
+        assert!(result.is_err());
+        assert!(!client.is_nullifier_domain_supported(&2));
     }
 
     #[test]
