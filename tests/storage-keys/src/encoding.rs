@@ -15,12 +15,12 @@ use super::support::{
     config_history_ring_key, config_history_total_key, config_version_key, contract_version_key,
     deployment, encoded, encoded_keys_in, genesis_key, instance_live_until_key,
     issuer_active_proof_count_key, issuer_epoch_key, issuer_index_count_key, issuer_index_key,
-    issuer_key, issuer_lifetime_proof_count_key, issuer_registry_key, issuer_ttl_key,
-    max_active_issuers_key, paused_key, proof_context_key, proof_key, proof_policy_key,
-    proof_subject_pseudonym_key, proof_ttl_key, proof_type_approved_key, protocol_config_key,
-    reactivatable_at_key, reactivation_cooldown_key, registry_epoch_key,
-    schema_predecessor_key, schema_rate_usage_key, schema_version_index_count_key,
-    schema_version_index_key, schema_version_key, successors_key,
+    issuer_key, issuer_lifetime_proof_count_key, issuer_registry_key,
+    issuer_revocation_tombstone_key, issuer_ttl_key, max_active_issuers_key, paused_key,
+    proof_context_key, proof_key, proof_policy_key, proof_subject_pseudonym_key, proof_ttl_key,
+    proof_type_approved_key, protocol_config_key, reactivatable_at_key, reactivation_cooldown_key,
+    registry_epoch_key, schema_predecessor_key, schema_rate_usage_key,
+    schema_version_index_count_key, schema_version_index_key, schema_version_key, successors_key,
 };
 use earnproof_shared::{disclosure_consent_commitment, StorageClass};
 use soroban_sdk::testutils::Address as _;
@@ -186,6 +186,14 @@ fn keys_encode_as_a_discriminant_followed_by_the_payload() {
     let discriminant: Symbol = pseudonym_key.get(0).unwrap().into_val(&env);
     assert_eq!(discriminant, Symbol::new(&env, "ProofSubjectPseudonym"));
     let payload: BytesN<32> = pseudonym_key.get(1).unwrap().into_val(&env);
+    assert_eq!(payload, identifier);
+
+    let tombstone_key: SorobanVec<Val> =
+        issuer_revocation_tombstone_key(&env, &identifier).into_val(&env);
+    assert_eq!(tombstone_key.len(), 2);
+    let discriminant: Symbol = tombstone_key.get(0).unwrap().into_val(&env);
+    assert_eq!(discriminant, Symbol::new(&env, "RevocationTombstone"));
+    let payload: BytesN<32> = tombstone_key.get(1).unwrap().into_val(&env);
     assert_eq!(payload, identifier);
 }
 

@@ -33,6 +33,8 @@ pub const LEDGER_TIMESTAMP_UNSET: u64 = 0;
 /// Initial metadata revision assigned to an issuer at registration. Each
 /// accepted metadata update increments the revision by one.
 pub const METADATA_REVISION_INITIAL: u32 = 1;
+/// Current encoding version for issuer revocation tombstones.
+pub const ISSUER_REVOCATION_TOMBSTONE_VERSION: u32 = 1;
 
 /// Minimum ledgers between approval and execution (timelock).
 /// Prevents immediate execution of just-approved upgrades.
@@ -373,7 +375,7 @@ impl InterfaceVersion {
 }
 
 /// The interface version implemented by `issuer-registry`.
-pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
 
 /// The interface version implemented by `protocol-config`.
 pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
@@ -998,6 +1000,39 @@ pub enum IssuerQueryStatus {
 pub struct IssuerStatusResult {
     pub issuer_id_hash: BytesN<32>,
     pub status: IssuerQueryStatus,
+}
+
+/// Minimal durable evidence that an issuer identifier was revoked. It excludes
+/// addresses, metadata, policy commitments, and revocation reasons.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerRevocationTombstone {
+    pub version: u32,
+    pub issuer_id_hash: BytesN<32>,
+    pub revoked_at: u64,
+    pub revoked_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum IssuerRevocationState {
+    Unknown,
+    NotRevoked,
+    Revoked,
+}
+
+/// One direct or bounded-batch revocation lookup result.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerRevocationResult {
+    pub issuer_id_hash: BytesN<32>,
+    pub state: IssuerRevocationState,
+    /// Zero for `Unknown` and `NotRevoked`.
+    pub version: u32,
+    /// Zero for `Unknown` and `NotRevoked`.
+    pub revoked_at: u64,
+    /// Zero for `Unknown` and `NotRevoked`.
+    pub revoked_ledger: u32,
 }
 
 /// Privacy-safe issuer signing-key commitment. Only a key digest and algorithm
