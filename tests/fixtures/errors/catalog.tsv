@@ -60,3 +60,4 @@
 322	CrossIssuerSupersession	ProofError	proof-registry	returned	never	403
 323	PredecessorNotFound	ProofError	proof-registry	returned	after-caller-change	404
 324	TooManySuccessors	ProofError	proof-registry	returned	never	400
+325	DisputeFilingWindowClosed	ProofError	proof-registry	returned	never	400

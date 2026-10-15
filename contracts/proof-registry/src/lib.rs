@@ -6,7 +6,8 @@
 #[allow(unused_imports)]
 use earnproof_shared::{
     is_interface_compatible, ApprovalQuery, ApprovalStatus, ArchivedProofRecord, ContractError,
-    DisputeActorClass, DisputeRecord, DisputeStatus, GenesisRecord, InterfaceVersion,
+    DisputeActorClass, DisputeFilingAnchor, DisputeFilingEligibility, DisputeFilingPolicy,
+    DisputeFilingStatus, DisputeRecord, DisputeStatus, GenesisRecord, InterfaceVersion,
     MigrationStatus, PauseScope, ProofError, ProofPayloadRecord, ProofRecord,
     ProofRegistrationInput, ProofStatus, ProofValidity, ProofValidityDetails, SchemaRateLimit,
     SchemaRateLimitUsage, TtlStatus, UpgradeApproval, UpgradeApprovalMetadata,
@@ -34,6 +35,7 @@ pub trait ProtocolConfigInterface {
     fn is_proof_type_approved(env: Env, proof_type: BytesN<32>) -> bool;
     fn get_schema_payload_limit(env: Env, version: u32) -> u32;
     fn get_schema_rate_limit(env: Env, version: u32) -> SchemaRateLimit;
+    fn get_dispute_filing_policy(env: Env) -> DisputeFilingPolicy;
     fn interface_version(env: Env) -> InterfaceVersion;
 }
 
@@ -1332,6 +1334,11 @@ impl ProofRegistryContract {
             }
         }
 
+        let eligibility = Self::resolve_dispute_filing_eligibility(&env, &proof)?;
+        if eligibility.status != DisputeFilingStatus::Eligible {
+            return Err(ProofError::DisputeFilingWindowClosed);
+        }
+
         let actor_class = Self::classify_actor(&env, &disputant, &proof.issuer_address);
         let now = env.ledger().timestamp();
         let record = DisputeRecord {
@@ -1358,6 +1365,21 @@ impl ProofRegistryContract {
         }
         .publish(&env);
         Ok(())
+    }
+
+    /// Resolves the active governed filing policy against immutable proof
+    /// lifecycle timestamps. The opening boundary is inclusive and the closing
+    /// boundary is exclusive.
+    pub fn get_dispute_filing_eligibility(
+        env: Env,
+        proof_id_hash: BytesN<32>,
+    ) -> Result<DisputeFilingEligibility, ProofError> {
+        let proof: ProofRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proof(proof_id_hash))
+            .ok_or(ProofError::ProofNotFound)?;
+        Self::resolve_dispute_filing_eligibility(&env, &proof)
     }
 
     /// Withdraws an open dispute. Only the address that opened it may
@@ -2450,6 +2472,63 @@ impl ProofRegistryContract {
         env.storage()
             .persistent()
             .get(&DataKey::Dispute(proof_id_hash.clone()))
+    }
+
+    fn resolve_dispute_filing_eligibility(
+        env: &Env,
+        proof: &ProofRecord,
+    ) -> Result<DisputeFilingEligibility, ProofError> {
+        let protocol_config = Self::get_protocol_config(env.clone())
+            .map_err(|_| ProofError::DisputeFilingWindowClosed)?;
+        let policy =
+            ProtocolConfigContractClient::new(env, &protocol_config).get_dispute_filing_policy();
+        let now = env.ledger().timestamp();
+        let anchor_timestamp = match policy.anchor {
+            DisputeFilingAnchor::Created => Some(proof.created_at),
+            DisputeFilingAnchor::Activated => Some(if proof.activates_at == 0 {
+                proof.created_at
+            } else {
+                proof.activates_at
+            }),
+            DisputeFilingAnchor::Expired => Some(proof.expires_at),
+            DisputeFilingAnchor::Revoked => {
+                if proof.status == ProofStatus::Revoked && proof.revoked_at != 0 {
+                    Some(proof.revoked_at)
+                } else {
+                    None
+                }
+            }
+        };
+
+        let Some(anchor_timestamp) = anchor_timestamp else {
+            return Ok(DisputeFilingEligibility {
+                policy_version: policy.version,
+                anchor: policy.anchor,
+                anchor_timestamp: 0,
+                opens_at: 0,
+                closes_at: 0,
+                evaluated_at: now,
+                status: DisputeFilingStatus::AnchorUnavailable,
+            });
+        };
+        let opens_at = anchor_timestamp.saturating_add(policy.opens_after_seconds);
+        let closes_at = anchor_timestamp.saturating_add(policy.closes_after_seconds);
+        let status = if now < opens_at {
+            DisputeFilingStatus::NotYetOpen
+        } else if now >= closes_at {
+            DisputeFilingStatus::Closed
+        } else {
+            DisputeFilingStatus::Eligible
+        };
+        Ok(DisputeFilingEligibility {
+            policy_version: policy.version,
+            anchor: policy.anchor,
+            anchor_timestamp,
+            opens_at,
+            closes_at,
+            evaluated_at: now,
+            status,
+        })
     }
 
     /// Classifies `actor` relative to a proof: the proof's own issuer, this
