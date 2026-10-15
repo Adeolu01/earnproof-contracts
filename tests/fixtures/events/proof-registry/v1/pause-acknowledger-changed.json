@@ -1,0 +1,15 @@
+{
+  "event": "PauseAcknowledgerChanged",
+  "contract": "proof-registry",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["PauseAcknowledgerChanged"],
+  "payload": {
+    "address": { "type": "Address", "description": "Incident operator whose role changed." },
+    "enabled": { "type": "Bool", "description": "Whether the incident operator role is enabled." },
+    "changed_by": { "type": "Address", "description": "Administrator that changed the role." }
+  },
+  "emitted_by": "set_pause_acknowledger",
+  "description": "Emitted when an incident operator acknowledgement role changes.",
+  "compatibility": "additive"
+}

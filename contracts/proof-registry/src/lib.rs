@@ -95,6 +95,8 @@ enum DataKey {
     IssuerActiveProofCount(Address),
     IssuerLifetimeProofCount(Address),
     PendingAdmin,
+    PendingAdminNominatedAt,
+    PendingAdminExpiresAt,
     /// Per-scope pause flag (issue: pause_scope/unpause_scope).
     ScopedPause(PauseScope),
     /// Active timelocked upgrade approval (single-slot, instance storage).
@@ -109,6 +111,10 @@ enum DataKey {
     UpgradeHistoryCount,
     /// One upgrade history log entry, keyed by its index.
     UpgradeHistory(u32),
+    PauseAcknowledger(Address),
+    PauseAcknowledgementHash(BytesN<32>),
+    PauseAcknowledgementHistory(u32),
+    PauseAcknowledgementCount,
     /// Versioned, opaque subject-nullifier commitment bound to one proof.
     SubjectNullifier(BytesN<32>),
 }
@@ -128,6 +134,13 @@ pub struct AdminTransferAccepted {
 pub struct AdminTransferCancelled {
     pub pending_admin: Address,
     pub cancelled_by: Address,
+}
+
+#[contractevent]
+pub struct AdminTransferExpired {
+    pub pending_admin: Address,
+    pub expired_at_ledger: u32,
+    pub cleaned_at_ledger: u32,
 }
 
 // ── upgrade events ────────────────────────────────────────────────────────────
@@ -168,6 +181,18 @@ pub struct ContractUpgraded {
 pub struct ScopedPauseChanged {
     pub scope: PauseScope,
     pub paused: bool,
+    pub changed_by: Address,
+}
+
+#[contractevent]
+pub struct PauseAcknowledged {
+    pub record: PauseAcknowledgementRecord,
+}
+
+#[contractevent]
+pub struct PauseAcknowledgerChanged {
+    pub address: Address,
+    pub enabled: bool,
     pub changed_by: Address,
 }
 
@@ -476,6 +501,142 @@ impl ProofRegistryContract {
         }
         .publish(&env);
         Ok(())
+    }
+
+    pub fn set_pause_acknowledger(
+        env: Env,
+        address: Address,
+        enabled: bool,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_valid_principal(&address)?;
+        Self::require_auth(&admin);
+        let key = DataKey::PauseAcknowledger(address.clone());
+        env.storage().persistent().set(&key, &enabled);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+        PauseAcknowledgerChanged {
+            address,
+            enabled,
+            changed_by: admin,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    pub fn is_pause_acknowledger(env: Env, address: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PauseAcknowledger(address))
+            .unwrap_or(false)
+    }
+
+    pub fn acknowledge_pause(
+        env: Env,
+        scope: PauseScope,
+        acknowledgement_hash: BytesN<32>,
+        actor: Address,
+    ) -> Result<PauseAcknowledgementRecord, ContractError> {
+        Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
+        let local_pause = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ScopedPause(scope))
+            .unwrap_or(false);
+        if !local_pause && !Self::is_scope_paused(&env, scope) {
+            return Err(ContractError::InvalidState);
+        }
+        if acknowledgement_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            return Err(ContractError::InvalidInput);
+        }
+        let admin = Self::get_admin(env.clone())?;
+        let role = if actor == admin {
+            PauseAcknowledgementRole::Administrator
+        } else if Self::is_pause_acknowledger(env.clone(), actor.clone()) {
+            PauseAcknowledgementRole::IncidentOperator
+        } else {
+            return Err(ContractError::Unauthorized);
+        };
+        Self::require_auth(&actor);
+
+        let hash_key = DataKey::PauseAcknowledgementHash(acknowledgement_hash.clone());
+        if env.storage().persistent().has(&hash_key) {
+            return Err(ContractError::InvalidInput);
+        }
+        let sequence: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseAcknowledgementCount)
+            .unwrap_or(0);
+        if sequence == u32::MAX {
+            return Err(ContractError::InvalidState);
+        }
+        let record = PauseAcknowledgementRecord {
+            record_version: 1,
+            sequence,
+            scope,
+            acknowledgement_hash,
+            acknowledged_by: actor,
+            role,
+            acknowledged_at_ledger: env.ledger().sequence(),
+        };
+        let history_key = DataKey::PauseAcknowledgementHistory(sequence);
+        env.storage().persistent().set(&hash_key, &record);
+        env.storage().persistent().set(&history_key, &record);
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseAcknowledgementCount, &(sequence + 1));
+        for key in [&hash_key, &history_key] {
+            env.storage().persistent().extend_ttl(
+                key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        Self::extend_instance_ttl(env.clone());
+        PauseAcknowledged {
+            record: record.clone(),
+        }
+        .publish(&env);
+        Ok(record)
+    }
+
+    pub fn get_pause_acknowledgement(
+        env: Env,
+        acknowledgement_hash: BytesN<32>,
+    ) -> Option<PauseAcknowledgementRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PauseAcknowledgementHash(acknowledgement_hash))
+    }
+
+    pub fn get_pause_acknowledgements(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> Result<Vec<PauseAcknowledgementRecord>, ContractError> {
+        if limit == 0 || limit > MAX_PAUSE_ACKNOWLEDGEMENT_HISTORY_PAGE {
+            return Err(ContractError::BatchTooLarge);
+        }
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseAcknowledgementCount)
+            .unwrap_or(0);
+        let end = cursor.saturating_add(limit).min(count);
+        let mut records = Vec::new(&env);
+        for sequence in cursor..end {
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::PauseAcknowledgementHistory(sequence))
+            {
+                records.push_back(record);
+            }
+        }
+        Ok(records)
     }
 
     /// Registers a proof with an issuer-approved stable proof-type identifier
@@ -1482,9 +1643,19 @@ impl ProofRegistryContract {
         Self::require_valid_principal(&new_admin)?;
         Self::require_auth(&admin);
 
+        let nominated_at = env.ledger().sequence();
+        let expires_at = nominated_at
+            .checked_add(ADMIN_TRANSFER_EXPIRY_LEDGERS)
+            .ok_or(ContractError::InvalidTimingConfig)?;
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdminNominatedAt, &nominated_at);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdminExpiresAt, &expires_at);
         AdminTransferNominated {
             pending_admin: new_admin.clone(),
             nominated_by: admin,
@@ -1495,17 +1666,17 @@ impl ProofRegistryContract {
 
     pub fn accept_admin(env: Env) -> Result<(), ContractError> {
         Self::ensure_not_decommissioned(&env).map_err(|_| ContractError::InvalidState)?;
-        let pending_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::PendingAdmin)
-            .ok_or(ContractError::NotFound)?;
+        let status = Self::get_admin_transfer_status(env.clone());
+        if status.state == AdminTransferState::Expired {
+            return Err(ContractError::AdminNominationExpired);
+        }
+        let pending_admin = status.pending_admin.ok_or(ContractError::NotFound)?;
         Self::require_auth(&pending_admin);
 
         env.storage()
             .instance()
             .set(&DataKey::Admin, &pending_admin);
-        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Self::clear_admin_nomination(&env);
 
         AdminTransferAccepted {
             new_admin: pending_admin,
@@ -1524,7 +1695,7 @@ impl ProofRegistryContract {
             .instance()
             .get(&DataKey::PendingAdmin)
             .ok_or(ContractError::NotFound)?;
-        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Self::clear_admin_nomination(&env);
 
         AdminTransferCancelled {
             pending_admin,
@@ -1532,6 +1703,67 @@ impl ProofRegistryContract {
         }
         .publish(&env);
         Ok(())
+    }
+
+    pub fn get_admin_transfer_status(env: Env) -> AdminTransferStatus {
+        let pending_admin: Option<Address> = env.storage().instance().get(&DataKey::PendingAdmin);
+        let Some(pending_admin) = pending_admin else {
+            return AdminTransferStatus {
+                state: AdminTransferState::Absent,
+                pending_admin: None,
+                nominated_at_ledger: 0,
+                expires_at_ledger: 0,
+            };
+        };
+        let nominated_at_ledger = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdminNominatedAt)
+            .unwrap_or(0);
+        let expires_at_ledger = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdminExpiresAt)
+            .unwrap_or(0);
+        let state = if expires_at_ledger == 0 || env.ledger().sequence() >= expires_at_ledger {
+            AdminTransferState::Expired
+        } else {
+            AdminTransferState::Pending
+        };
+        AdminTransferStatus {
+            state,
+            pending_admin: Some(pending_admin),
+            nominated_at_ledger,
+            expires_at_ledger,
+        }
+    }
+
+    pub fn cleanup_expired_admin_transfer(env: Env) -> Result<(), ContractError> {
+        let status = Self::get_admin_transfer_status(env.clone());
+        match status.state {
+            AdminTransferState::Absent => return Err(ContractError::NotFound),
+            AdminTransferState::Pending => return Err(ContractError::InvalidState),
+            AdminTransferState::Expired => {}
+        }
+        let pending_admin = status.pending_admin.ok_or(ContractError::NotFound)?;
+        Self::clear_admin_nomination(&env);
+        AdminTransferExpired {
+            pending_admin,
+            expired_at_ledger: status.expires_at_ledger,
+            cleaned_at_ledger: env.ledger().sequence(),
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    fn clear_admin_nomination(env: &Env) {
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminNominatedAt);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminExpiresAt);
     }
 
     /// Returns a structured validity answer for a proof, including the effective
@@ -2730,6 +2962,9 @@ mod test {
 
     use super::{DataKey, ProofRegistryContract, ProofRegistryContractClient};
     use earnproof_shared::{
+        AdminTransferState, ContractError, DisputeActorClass, DisputeStatus, PauseScope,
+        ProofError, ProofRecord, ProofStatus, ProofValidity, ADMIN_TRANSFER_EXPIRY_LEDGERS,
+        MAX_PROOF_BATCH_SIZE, TTL_THRESHOLD_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
         DisputeActorClass, DisputeStatus, PauseScope, ProofError, ProofRecord, ProofStatus,
         ProofValidity, SubjectNullifier, MAX_PROOF_BATCH_SIZE, TTL_THRESHOLD_LEDGERS,
         UPGRADE_TIMELOCK_LEDGERS,
@@ -2790,6 +3025,31 @@ mod test {
     }
 
     // ── existing tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn admin_nomination_expiry_is_exact_and_replay_safe() {
+        let (env, client, _protocol_config, _issuer_registry, _issuer_registry_id) = setup();
+        env.ledger().set_sequence_number(70);
+        let current_admin = Address::from_str(&env, ADMIN);
+        let nominee = Address::from_str(&env, ISSUER);
+        client.nominate_admin(&nominee);
+        let status = client.get_admin_transfer_status();
+        assert_eq!(status.state, AdminTransferState::Pending);
+        assert_eq!(status.expires_at_ledger, 70 + ADMIN_TRANSFER_EXPIRY_LEDGERS);
+
+        env.ledger().set_sequence_number(status.expires_at_ledger);
+        assert_eq!(
+            client.try_accept_admin(),
+            Err(Ok(ContractError::AdminNominationExpired))
+        );
+        assert_eq!(client.get_admin(), current_admin);
+        client.cleanup_expired_admin_transfer();
+        assert_eq!(
+            client.try_cleanup_expired_admin_transfer(),
+            Err(Ok(ContractError::NotFound))
+        );
+        assert_eq!(client.get_admin(), current_admin);
+    }
 
     #[test]
     fn registers_and_validates_proof() {

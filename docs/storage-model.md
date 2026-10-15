@@ -53,6 +53,9 @@ Namespace ownership, key-collision safety, and the rules for adding a storage ke
 | Entry | DataKey | Access Pattern | Behavior on Expiry | Fail-Closed |
 |-------|---------|-----------------|-------------------|------------|
 | Approved Schema Version | `SchemaVersion(ver)` | `is_schema_version_approved(ver)` reads & extends | Returns false | ✓ Yes |
+| Pause Acknowledger | `PauseAcknowledger(address)` | admin-managed role lookup | Returns false | ✓ Yes |
+| Pause Acknowledgement | `PauseAcknowledgementHash(hash)`, `PauseAcknowledgementHistory(sequence)` | direct and bounded history queries | Returns `None` or omits missing history | ✓ Yes |
+| Pause Acknowledgement Count | `PauseAcknowledgementCount` | append and history query | Returns `0` | ✓ Yes |
 
 Soroban does not automatically extend TTLs. Every entry will expire and be archived unless a contract call explicitly extends it before the ledger cutoff. Archived persistent entries are restored automatically on the next access, at the cost of an extra ledger write and rent bump. The exact boundaries, restoration semantics, and operator cadence are documented in [Storage TTL, Expiration, and Restoration](./storage-ttl.md).
 **Persistent TTL Extension**: Called via `extend_schema_ttl(version)` on:
@@ -82,6 +85,10 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 |-------|---------|-----------------|-------------------|------------|
 | Issuer Record | `Issuer(hash)` | `get_issuer(hash)` reads & extends | IssuerNotFound error | ✓ Yes |
 | Address → Issuer Mapping | `AddressIssuer(addr)` | `is_active_address(addr)`, `get_issuer_by_address(addr)` read & extend | Not found; returns false | ✓ Yes |
+| Compromised Key Marker | `CompromisedSigningKey(issuer, key, algorithm)` | direct status query | Returns `None` | ✓ Yes |
+| Compromised Key History | `CompromisedSigningKeyHistory(issuer, sequence)` | bounded paged query | Missing entries are omitted | ✓ Yes |
+| Compromised Key Count | `CompromisedSigningKeyCount(issuer)` | bounded paged query | Returns `0` | ✓ Yes |
+| Governance Role Delay | `GovernanceRoleDelay(role)` | policy reads and admin writes | Returns `0` for legacy/default policy | ✓ Yes |
 
 **Persistent TTL Extensions**: 
 - `extend_issuer_ttl(hash)`: extends `Issuer(hash)` entry
@@ -92,6 +99,9 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
   - `update_issuer()`, `suspend_issuer()`, `reactivate_issuer()`, `revoke_issuer()`: extend Issuer entry
   - `rotate_issuer_address()`: extends both old entry (removed) and new entry
   - `get_issuer_by_address()`: extends AddressIssuer entry on read
+  - `mark_signing_key_compromised()`: stores and extends the immutable marker,
+    sequence entry, and per-issuer count
+  - `set_role_activation_delay()`: stores and extends the per-role policy
 
 **Critical**: Both `Issuer(hash)` and `AddressIssuer(addr)` for a single issuer are extended together. If one expires, the other will too (same operation). Both must be present for `is_active_address()` to succeed.
 
@@ -120,6 +130,9 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 | Proof Record | `Proof(hash)` | `get_proof(hash)` reads & extends; `is_valid_proof(hash)` reads & extends | ProofNotFound error | ✓ Yes |
 | Proof Context Commitments | `ProofContext(hash)` | `get_proof_context_commitments(hash)` reads & extends when present | Returns `None` for legacy records; ProofNotFound for an unknown proof | ✓ Yes |
 | Subject Pseudonym Commitment | `ProofSubjectPseudonym(hash)` | `get_proof_pseudonym_commitment(hash)` reads & extends with proof record | Returns `None` when omitted or on legacy records | ✓ Yes |
+| Pause Acknowledger | `PauseAcknowledger(address)` | admin-managed role lookup | Returns false | ✓ Yes |
+| Pause Acknowledgement | `PauseAcknowledgementHash(hash)`, `PauseAcknowledgementHistory(sequence)` | direct and bounded history queries | Returns `None` or omits missing history | ✓ Yes |
+| Pause Acknowledgement Count | `PauseAcknowledgementCount` | append and history query | Returns `0` | ✓ Yes |
 
 **Persistent TTL Extension**: Called via `extend_proof_key_ttl(key)` on:
 - `register_proof()`: extends on creation

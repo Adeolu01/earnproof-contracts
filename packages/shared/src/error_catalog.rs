@@ -265,6 +265,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 61] = [
         client_message: "Incompatible dependency version",
     },
     ErrorSpec {
+        code: 63,
+        name: "AdminNominationExpired",
+        enum_name: "ContractError",
+        domain: Domain::Common,
+        status: Status::Returned,
+        cause: "An administrator transfer was accepted at or after its exclusive expiry ledger, or a legacy nomination has no expiry metadata.",
+        retry: Retry::AfterOperatorAction,
+        remediation: "Have the current administrator create a fresh nomination, then accept it before the reported expiry ledger.",
+        http_status: 409,
+        client_message: "Administrator nomination has expired",
+    },
+    ErrorSpec {
         code: 64,
         name: "BatchTooLarge",
         enum_name: "ContractError",

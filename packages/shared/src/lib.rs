@@ -45,6 +45,9 @@ pub const UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
 /// Stale approvals expire and must be re-approved.
 /// ~30 days at 5s/ledger = 518_400 ledgers
 pub const UPGRADE_APPROVAL_EXPIRY_LEDGERS: u32 = 518_400;
+/// Maximum lifetime of an administrator transfer nomination. A nomination is
+/// valid in `[nominated_at_ledger, expires_at_ledger)`.
+pub const ADMIN_TRANSFER_EXPIRY_LEDGERS: u32 = 120_960;
 /// Maximum number of distinct signers in a critical-action approval policy.
 pub const MAX_CRITICAL_ACTION_SIGNERS: u32 = 16;
 /// Maximum lifetime of a critical-action proposal, in ledgers.
@@ -485,6 +488,25 @@ pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion
 
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AdminTransferState {
+    Absent,
+    Pending,
+    Expired,
+}
+
+/// Query result shared by every contract that supports two-step admin transfer.
+/// Zero ledger values identify a legacy nomination without expiry sidecars.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferStatus {
+    pub state: AdminTransferState,
+    pub pending_admin: Option<Address>,
+    pub nominated_at_ledger: u32,
+    pub expires_at_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum GovernanceRole {
     ProtocolPause,
     SchemaManagement,
@@ -493,6 +515,18 @@ pub enum GovernanceRole {
     DependencyManagement,
     UpgradeManagement,
     Recovery,
+}
+
+/// Maximum configurable delay between granting a governance role and its
+/// activation (approximately one week at five-second ledgers).
+pub const MAX_GOVERNANCE_ROLE_ACTIVATION_DELAY_LEDGERS: u32 = 120_960;
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceAssignmentState {
+    Pending,
+    Active,
+    Expired,
 }
 
 #[contracttype]
@@ -516,6 +550,16 @@ impl GovernanceRoleAssignment {
 
     pub fn is_pending_at(&self, ledger: u32) -> bool {
         ledger < self.activation_ledger
+    }
+
+    pub fn state_at(&self, ledger: u32) -> GovernanceAssignmentState {
+        if self.is_pending_at(ledger) {
+            GovernanceAssignmentState::Pending
+        } else if self.is_active_at(ledger) {
+            GovernanceAssignmentState::Active
+        } else {
+            GovernanceAssignmentState::Expired
+        }
     }
 }
 
@@ -604,6 +648,9 @@ pub enum ContractError {
     // Input validation errors (60-79)
     InvalidInput = 60,
     InvalidAddress = 61,
+    /// A nominated administrator attempted acceptance at or after the
+    /// nomination's exclusive expiry ledger.
+    AdminNominationExpired = 63,
     /// A bounded batch query supplied more items than its documented maximum.
     BatchTooLarge = 64,
     /// A cross-contract dependency reported an interface version outside the
@@ -1073,6 +1120,29 @@ pub enum PauseScope {
 }
 
 #[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PauseAcknowledgementRole {
+    Administrator,
+    IncidentOperator,
+}
+
+/// Immutable commitment-only evidence that an authorized operator reviewed an
+/// active pause. It deliberately contains no raw incident response data.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseAcknowledgementRecord {
+    pub record_version: u32,
+    pub sequence: u32,
+    pub scope: PauseScope,
+    pub acknowledgement_hash: BytesN<32>,
+    pub acknowledged_by: Address,
+    pub role: PauseAcknowledgementRole,
+    pub acknowledged_at_ledger: u32,
+}
+
+pub const MAX_PAUSE_ACKNOWLEDGEMENT_HISTORY_PAGE: u32 = 20;
+
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IssuerStatus {
     Active,
@@ -1207,6 +1277,23 @@ pub struct SigningKeyCommitment {
     pub algorithm: u32,
     pub activated_ledger: u32,
 }
+
+/// Immutable, privacy-safe evidence that an issuer signing-key commitment was
+/// declared compromised. Raw public or private key material is never stored.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompromisedSigningKeyRecord {
+    pub record_version: u32,
+    pub issuer_id_hash: BytesN<32>,
+    pub key_hash: BytesN<32>,
+    pub algorithm: u32,
+    pub effective_ledger: u32,
+    pub reason_hash: BytesN<32>,
+    pub sequence: u32,
+}
+
+/// Maximum number of compromised-key records returned by one history query.
+pub const MAX_SIGNING_KEY_COMPROMISE_HISTORY_PAGE: u32 = 20;
 
 /// Versioned opaque commitments for issuer classification policy documents.
 #[contracttype]
