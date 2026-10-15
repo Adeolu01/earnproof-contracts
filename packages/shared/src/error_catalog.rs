@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 59] = [
+pub const ERROR_CATALOG: [ErrorSpec; 60] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -863,6 +863,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 59] = [
         remediation: "A predecessor can only have a bounded number of successors.",
         http_status: 400,
         client_message: "Too many successors",
+    },
+    ErrorSpec {
+        code: 325,
+        name: "DisputeFilingWindowClosed",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "The governed dispute filing window has not opened, has closed, or its lifecycle anchor is unavailable.",
+        retry: Retry::Never,
+        remediation: "Read get_dispute_filing_eligibility before filing and do not replay a request outside its reported half-open window.",
+        http_status: 400,
+        client_message: "Dispute filing window is closed",
     },
 ];
 

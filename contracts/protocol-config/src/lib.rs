@@ -2,13 +2,14 @@
 
 use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
-    CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
-    SchemaPolicy, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
-    CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
+    CriticalActionProposal, DisputeFilingAnchor, DisputeFilingPolicy, GenesisRecord,
+    InterfaceVersion, MigrationStatus, PauseScope, SchemaPolicy, CONFIG_HISTORY_CAPACITY,
+    CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
+    DISPUTE_FILING_POLICY_VERSION, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
     MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
     MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
-    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
-    SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION, SHA256_COMMITMENT_ALGORITHM_V1,
+    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol,
@@ -50,6 +51,7 @@ enum DataKey {
     CriticalActionPolicy,
     CriticalActionProposal(BytesN<32>),
     CriticalActionNonce,
+    DisputeFilingPolicy,
 }
 
 // ── admin transfer events ─────────────────────────────────────────────────────────
@@ -160,6 +162,14 @@ pub struct SchemaPayloadLimitSet {
 }
 
 #[contractevent]
+pub struct DisputeFilingPolicySet {
+    pub version: u32,
+    pub anchor: DisputeFilingAnchor,
+    pub opens_after_seconds: u64,
+    pub closes_after_seconds: u64,
+}
+
+#[contractevent]
 pub struct CriticalActionProposed {
     pub proposal_id: BytesN<32>,
     pub proposer: Address,
@@ -248,6 +258,10 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::ContractVersion, &1_u32);
+        env.storage().instance().set(
+            &DataKey::DisputeFilingPolicy,
+            &Self::default_dispute_filing_policy(),
+        );
         let genesis = GenesisRecord {
             genesis_id: earnproof_shared::compute_genesis_id(&env, "earnproof_protocol_config"),
             initialized_at_ledger: env.ledger().sequence(),
@@ -563,7 +577,9 @@ impl ProtocolConfigContract {
 
         let existing = Self::stored_predecessor(env.clone(), version);
         if existing.is_some_and(|stored| stored != predecessor)
-            || (existing.is_none() && predecessor != 0 && Self::schema_version_exists(env.clone(), version))
+            || (existing.is_none()
+                && predecessor != 0
+                && Self::schema_version_exists(env.clone(), version))
         {
             return Err(ContractError::InvalidState);
         }
@@ -581,9 +597,11 @@ impl ProtocolConfigContract {
         if predecessor != 0 {
             let key = DataKey::SchemaPredecessor(version);
             env.storage().persistent().set(&key, &predecessor);
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
             SchemaPredecessorSet {
                 version,
                 predecessor,
@@ -687,7 +705,10 @@ impl ProtocolConfigContract {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         Self::ensure_nonzero_version(version)?;
-        if env.storage().persistent().has(&DataKey::SchemaVersion(version))
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::SchemaVersion(version))
             || proof_types.is_empty()
             || proof_types.len() > MAX_SCHEMA_PROOF_TYPES
             || max_validity_seconds == 0
@@ -791,6 +812,48 @@ impl ProtocolConfigContract {
             .instance()
             .get(&DataKey::ConfigVersion)
             .unwrap_or(0)
+    }
+
+    /// Admin-only: replace the global proof-dispute filing window. The policy
+    /// applies at filing time, including to proofs created before the change.
+    pub fn set_dispute_filing_policy(
+        env: Env,
+        policy: DisputeFilingPolicy,
+    ) -> Result<(), ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        if policy.version != DISPUTE_FILING_POLICY_VERSION
+            || policy.closes_after_seconds <= policy.opens_after_seconds
+        {
+            return Err(ContractError::InvalidInput);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::DisputeFilingPolicy, &policy);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::DisputeFilingPolicy,
+            Self::commit(&env, policy.clone()),
+        );
+        DisputeFilingPolicySet {
+            version: policy.version,
+            anchor: policy.anchor,
+            opens_after_seconds: policy.opens_after_seconds,
+            closes_after_seconds: policy.closes_after_seconds,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Returns the active policy. Pre-policy deployments read the compatibility
+    /// default, preserving the legacy behavior that filings never age out.
+    pub fn get_dispute_filing_policy(env: Env) -> DisputeFilingPolicy {
+        env.storage()
+            .instance()
+            .get(&DataKey::DisputeFilingPolicy)
+            .unwrap_or_else(Self::default_dispute_filing_policy)
     }
 
     // ── schema payload size limits ───────────────────────────────────────────
@@ -1236,6 +1299,15 @@ impl ProtocolConfigContract {
         Ok(())
     }
 
+    fn default_dispute_filing_policy() -> DisputeFilingPolicy {
+        DisputeFilingPolicy {
+            version: DISPUTE_FILING_POLICY_VERSION,
+            anchor: DisputeFilingAnchor::Created,
+            opens_after_seconds: 0,
+            closes_after_seconds: u64::MAX,
+        }
+    }
+
     fn require_valid_principal(address: &Address) -> Result<(), ContractError> {
         if !earnproof_shared::is_valid_principal_address(address) {
             return Err(ContractError::InvalidInput);
@@ -1401,15 +1473,21 @@ impl ProtocolConfigContract {
         let key = DataKey::SchemaPredecessor(version);
         let predecessor = env.storage().persistent().get(&key);
         if predecessor.is_some() {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
         }
         predecessor
     }
 
     fn schema_version_exists(env: Env, version: u32) -> bool {
-        version != 0 && env.storage().persistent().has(&DataKey::SchemaVersion(version))
+        version != 0
+            && env
+                .storage()
+                .persistent()
+                .has(&DataKey::SchemaVersion(version))
     }
 
     fn lineage_reaches(env: Env, start: u32, target: u32) -> bool {
@@ -1549,7 +1627,8 @@ mod test {
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
         ConfigChangeCategory, ContractError, CriticalAction, CriticalActionPolicy,
-        CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, TTL_THRESHOLD_LEDGERS,
+        DisputeFilingAnchor, DisputeFilingPolicy, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS,
+        DISPUTE_FILING_POLICY_VERSION, TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
         testutils::{storage::Persistent as _, Address as _, Ledger as _},
@@ -1593,6 +1672,68 @@ mod test {
         assert!(!client.is_schema_version_approved(&1));
         // contract version initialized to 1
         assert_eq!(client.get_contract_version(), 1);
+        assert_eq!(
+            client.get_dispute_filing_policy(),
+            DisputeFilingPolicy {
+                version: DISPUTE_FILING_POLICY_VERSION,
+                anchor: DisputeFilingAnchor::Created,
+                opens_after_seconds: 0,
+                closes_after_seconds: u64::MAX,
+            }
+        );
+    }
+
+    #[test]
+    fn dispute_filing_policy_is_versioned_validated_and_recorded() {
+        let (_env, client, _admin) = setup();
+        let before = client.get_config_version();
+        let policy = DisputeFilingPolicy {
+            version: DISPUTE_FILING_POLICY_VERSION,
+            anchor: DisputeFilingAnchor::Expired,
+            opens_after_seconds: 10,
+            closes_after_seconds: 20,
+        };
+        client.set_dispute_filing_policy(&policy);
+        assert_eq!(client.get_dispute_filing_policy(), policy);
+        assert_eq!(client.get_config_version(), before + 1);
+
+        let invalid_version = DisputeFilingPolicy {
+            version: DISPUTE_FILING_POLICY_VERSION + 1,
+            anchor: DisputeFilingAnchor::Created,
+            opens_after_seconds: 0,
+            closes_after_seconds: 1,
+        };
+        assert_eq!(
+            client.try_set_dispute_filing_policy(&invalid_version),
+            Err(Ok(ContractError::InvalidInput))
+        );
+        let empty_window = DisputeFilingPolicy {
+            version: DISPUTE_FILING_POLICY_VERSION,
+            anchor: DisputeFilingAnchor::Created,
+            opens_after_seconds: 5,
+            closes_after_seconds: 5,
+        };
+        assert_eq!(
+            client.try_set_dispute_filing_policy(&empty_window),
+            Err(Ok(ContractError::InvalidInput))
+        );
+        assert_eq!(client.get_config_version(), before + 1);
+    }
+
+    #[test]
+    fn dispute_filing_policy_requires_admin_auth() {
+        let (env, client, _admin) = setup();
+        env.set_auths(&[]);
+        let policy = DisputeFilingPolicy {
+            version: DISPUTE_FILING_POLICY_VERSION,
+            anchor: DisputeFilingAnchor::Created,
+            opens_after_seconds: 0,
+            closes_after_seconds: 10,
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.set_dispute_filing_policy(&policy);
+        }));
+        assert!(result.is_err());
     }
 
     #[test]

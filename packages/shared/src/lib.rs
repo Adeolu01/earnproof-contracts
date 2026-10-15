@@ -107,6 +107,9 @@ pub const LEGACY_PROOF_TYPE: u32 = 0;
 pub const LEGACY_COMMITMENT_ALGORITHM: u32 = 0;
 pub const SHA256_COMMITMENT_ALGORITHM_V1: u32 = 1;
 
+/// Current encoding version for governed proof-dispute filing windows.
+pub const DISPUTE_FILING_POLICY_VERSION: u32 = 1;
+
 /// Governed, fixed-size issuance policy for one schema version.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -180,6 +183,51 @@ pub struct ProofPayloadRecord {
 pub struct SchemaPolicy {
     pub proof_types: soroban_sdk::Vec<u32>,
     pub max_validity_seconds: u64,
+}
+
+/// Immutable lifecycle timestamp used as the origin of a dispute filing window.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DisputeFilingAnchor {
+    Created,
+    Activated,
+    Expired,
+    Revoked,
+}
+
+/// Governed dispute filing window. A filing is eligible when the ledger
+/// timestamp is in `[anchor + opens_after_seconds, anchor + closes_after_seconds)`.
+/// Saturating timestamp arithmetic is required by every consumer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeFilingPolicy {
+    pub version: u32,
+    pub anchor: DisputeFilingAnchor,
+    pub opens_after_seconds: u64,
+    pub closes_after_seconds: u64,
+}
+
+/// Deterministic reason returned by the proof-registry eligibility query.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DisputeFilingStatus {
+    Eligible,
+    NotYetOpen,
+    Closed,
+    AnchorUnavailable,
+}
+
+/// Fully resolved filing-window result for one proof and one policy snapshot.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeFilingEligibility {
+    pub policy_version: u32,
+    pub anchor: DisputeFilingAnchor,
+    pub anchor_timestamp: u64,
+    pub opens_at: u64,
+    pub closes_at: u64,
+    pub evaluated_at: u64,
+    pub status: DisputeFilingStatus,
 }
 
 /// Immutable registration metadata kept separately from `ProofRecord` so
@@ -376,7 +424,7 @@ impl InterfaceVersion {
 pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
 
 /// The interface version implemented by `protocol-config`.
-pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
+pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 2, 0);
 
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -618,6 +666,9 @@ pub enum ProofError {
     PredecessorNotFound = 323,
     /// The predecessor already has the maximum number of successors.
     TooManySuccessors = 324,
+    /// The governed dispute filing window has not opened, has closed, or its
+    /// lifecycle anchor does not exist for this proof.
+    DisputeFilingWindowClosed = 325,
 }
 
 /// Versioned asset identifier accepted by context-aware proof registration.
@@ -814,6 +865,7 @@ pub enum ConfigChangeCategory {
     SchemaPolicy,
     CommitmentAlgorithmPolicy,
     ApprovalPolicyUpdate,
+    DisputeFilingPolicy,
 }
 
 /// Category of a protocol mutation that may require threshold approval.
@@ -846,12 +898,8 @@ impl CriticalAction {
             Self::SchemaApproval(_) => CriticalActionCategory::SchemaApproval,
             Self::SchemaDeprecation(_) => CriticalActionCategory::SchemaDeprecation,
             Self::SchemaPayloadLimit(_, _) => CriticalActionCategory::SchemaPayloadLimit,
-            Self::IssuerRegistryReplacement(_) => {
-                CriticalActionCategory::IssuerRegistryReplacement
-            }
-            Self::ProtocolConfigReplacement(_) => {
-                CriticalActionCategory::ProtocolConfigReplacement
-            }
+            Self::IssuerRegistryReplacement(_) => CriticalActionCategory::IssuerRegistryReplacement,
+            Self::ProtocolConfigReplacement(_) => CriticalActionCategory::ProtocolConfigReplacement,
             Self::ApprovalPolicyUpdate(_) => CriticalActionCategory::ApprovalPolicyUpdate,
         }
     }
