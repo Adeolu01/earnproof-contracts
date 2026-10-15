@@ -41,6 +41,8 @@ Each is asserted in [`tests/events/`](../tests/events/); the mapping is in
 | `schema_approved` | `approve_schema_version` | `version` |
 | `schema_deprecated` | `deprecate_schema_version` | `version` |
 | `schema_predecessor_set` | `approve_schema_with_predecessor` | `version`, `predecessor` |
+| `pause_acknowledged` | `acknowledge_pause` | `record` |
+| `pause_acknowledger_changed` | `set_pause_acknowledger` | `address`, `enabled`, `changed_by` |
 
 `approve_schema_with_predecessor` approves a schema version and records the
 prior version it succeeds. It publishes `schema_predecessor_set` with the
@@ -86,6 +88,8 @@ documented `0` sentinel.
 |---|---|---|
 | `proof_registered` | `register_proof` | `proof_id_hash`, `issuer_address`, `schema_version`, `created_ledger`, `created_at`, `expires_at`, `epoch` |
 | `proof_revoked` | `revoke_proof`, `admin_revoke_proof` | `proof_id_hash`, `revoked_at`, `revoked_ledger`, `by_admin`, `epoch` |
+| `pause_acknowledged` | `acknowledge_pause` | `record` |
+| `pause_acknowledger_changed` | `set_pause_acknowledger` | `address`, `enabled`, `changed_by` |
 
 `proof_registered` carries the on-chain creation timing, sourced from the
 ledger, and the registry epoch after the mutation. `proof_revoked` carries both

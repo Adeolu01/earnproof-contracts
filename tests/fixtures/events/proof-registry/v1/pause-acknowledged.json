@@ -1,0 +1,16 @@
+{
+  "event": "PauseAcknowledged",
+  "contract": "proof-registry",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["PauseAcknowledged"],
+  "payload": {
+    "record": {
+      "type": "PauseAcknowledgementRecord",
+      "description": "Commitment-only acknowledgement with scope, role, sequence, and ledger metadata."
+    }
+  },
+  "emitted_by": "acknowledge_pause",
+  "description": "Emitted when an authorized responder acknowledges an active proof-registry pause.",
+  "compatibility": "additive"
+}

@@ -53,6 +53,9 @@ Namespace ownership, key-collision safety, and the rules for adding a storage ke
 | Entry | DataKey | Access Pattern | Behavior on Expiry | Fail-Closed |
 |-------|---------|-----------------|-------------------|------------|
 | Approved Schema Version | `SchemaVersion(ver)` | `is_schema_version_approved(ver)` reads & extends | Returns false | ✓ Yes |
+| Pause Acknowledger | `PauseAcknowledger(address)` | admin-managed role lookup | Returns false | ✓ Yes |
+| Pause Acknowledgement | `PauseAcknowledgementHash(hash)`, `PauseAcknowledgementHistory(sequence)` | direct and bounded history queries | Returns `None` or omits missing history | ✓ Yes |
+| Pause Acknowledgement Count | `PauseAcknowledgementCount` | append and history query | Returns `0` | ✓ Yes |
 
 Soroban does not automatically extend TTLs. Every entry will expire and be archived unless a contract call explicitly extends it before the ledger cutoff. Archived persistent entries are restored automatically on the next access, at the cost of an extra ledger write and rent bump. The exact boundaries, restoration semantics, and operator cadence are documented in [Storage TTL, Expiration, and Restoration](./storage-ttl.md).
 **Persistent TTL Extension**: Called via `extend_schema_ttl(version)` on:
@@ -127,6 +130,9 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 | Proof Record | `Proof(hash)` | `get_proof(hash)` reads & extends; `is_valid_proof(hash)` reads & extends | ProofNotFound error | ✓ Yes |
 | Proof Context Commitments | `ProofContext(hash)` | `get_proof_context_commitments(hash)` reads & extends when present | Returns `None` for legacy records; ProofNotFound for an unknown proof | ✓ Yes |
 | Subject Pseudonym Commitment | `ProofSubjectPseudonym(hash)` | `get_proof_pseudonym_commitment(hash)` reads & extends with proof record | Returns `None` when omitted or on legacy records | ✓ Yes |
+| Pause Acknowledger | `PauseAcknowledger(address)` | admin-managed role lookup | Returns false | ✓ Yes |
+| Pause Acknowledgement | `PauseAcknowledgementHash(hash)`, `PauseAcknowledgementHistory(sequence)` | direct and bounded history queries | Returns `None` or omits missing history | ✓ Yes |
+| Pause Acknowledgement Count | `PauseAcknowledgementCount` | append and history query | Returns `0` | ✓ Yes |
 
 **Persistent TTL Extension**: Called via `extend_proof_key_ttl(key)` on:
 - `register_proof()`: extends on creation

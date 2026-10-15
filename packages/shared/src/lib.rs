@@ -955,6 +955,29 @@ pub enum PauseScope {
 }
 
 #[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PauseAcknowledgementRole {
+    Administrator,
+    IncidentOperator,
+}
+
+/// Immutable commitment-only evidence that an authorized operator reviewed an
+/// active pause. It deliberately contains no raw incident response data.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseAcknowledgementRecord {
+    pub record_version: u32,
+    pub sequence: u32,
+    pub scope: PauseScope,
+    pub acknowledgement_hash: BytesN<32>,
+    pub acknowledged_by: Address,
+    pub role: PauseAcknowledgementRole,
+    pub acknowledged_at_ledger: u32,
+}
+
+pub const MAX_PAUSE_ACKNOWLEDGEMENT_HISTORY_PAGE: u32 = 20;
+
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IssuerStatus {
     Active,

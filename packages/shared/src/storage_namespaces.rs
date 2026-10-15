@@ -49,7 +49,7 @@ pub const CONTRACTS: [&str; 3] = ["issuer-registry", "proof-registry", "protocol
 /// Adding a row here is the second half of adding a storage key; the first is
 /// adding the `DataKey` variant. Doing one without the other fails the tests in
 /// `tests/storage-keys/`.
-pub const STORAGE_NAMESPACES: [StorageNamespace; 75] = [
+pub const STORAGE_NAMESPACES: [StorageNamespace; 83] = [
     StorageNamespace {
         contract: "issuer-registry",
         namespace: "ActiveIssuerCount",
@@ -380,6 +380,38 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 75] = [
     },
     StorageNamespace {
         contract: "proof-registry",
+        namespace: "PauseAcknowledgementCount",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
+        owner: "incident operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
+        namespace: "PauseAcknowledgementHash",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "PauseAcknowledgementRecord",
+        owner: "incident operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
+        namespace: "PauseAcknowledgementHistory",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "PauseAcknowledgementRecord",
+        owner: "incident operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
+        namespace: "PauseAcknowledger",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "bool",
+        owner: "deployment operator",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
         namespace: "PendingAdmin",
         arity: 0,
         class: StorageClass::Instance,
@@ -552,6 +584,38 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 75] = [
         arity: 0,
         class: StorageClass::Instance,
         value: "MigrationStatus",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "PauseAcknowledgementCount",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "u32",
+        owner: "incident operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "PauseAcknowledgementHash",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "PauseAcknowledgementRecord",
+        owner: "incident operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "PauseAcknowledgementHistory",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "PauseAcknowledgementRecord",
+        owner: "incident operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "PauseAcknowledger",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "bool",
         owner: "protocol operator",
     },
     StorageNamespace {
