@@ -58,6 +58,7 @@ lineage link and `schema_approved` for the approval itself. A predecessor-less
 | `issuer_reactivated` | `reactivate_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at` |
 | `issuer_revoked` | `revoke_issuer` | `issuer_id_hash`, `effective_ledger`, `effective_timestamp`, `updated_at` |
 | `issuer_address_rotated` | `rotate_issuer_address` | `issuer_id_hash`, `old_address`, `new_address`, `updated_at` |
+| `issuer_signing_key_compromised` | `mark_signing_key_compromised` | `record`, `marked_by` |
 
 `issuer_address_rotated` carries both addresses so an indexer can update its
 address→issuer mapping without scanning storage. An indexer that ignores

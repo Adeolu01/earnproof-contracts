@@ -1,0 +1,20 @@
+{
+  "event": "IssuerSigningKeyCompromised",
+  "contract": "issuer-registry",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["IssuerSigningKeyCompromised"],
+  "payload": {
+    "record": {
+      "type": "CompromisedSigningKeyRecord",
+      "description": "Versioned key and reason commitments with effective ledger and sequence metadata."
+    },
+    "marked_by": {
+      "type": "Address",
+      "description": "Administrator that declared the commitment compromised."
+    }
+  },
+  "emitted_by": "mark_signing_key_compromised",
+  "description": "Emitted once when a known issuer signing-key commitment is declared compromised.",
+  "compatibility": "additive"
+}

@@ -1,12 +1,13 @@
 #![no_std]
 
 use earnproof_shared::{
-    AdminTransferState, AdminTransferStatus, ContractError, GenesisRecord, GovernanceRole,
-    GovernanceRoleAssignment, InterfaceVersion, IssuerError, IssuerPolicyCommitments,
-    IssuerQueryStatus, IssuerRecord, IssuerStatus, IssuerStatusResult, MigrationStatus,
-    RotationRecord, SigningKeyCommitment, TtlStatus, UpgradeApproval, UpgradeReceipt,
-    ADMIN_TRANSFER_EXPIRY_LEDGERS, ISSUER_REGISTRY_INTERFACE_VERSION, MAX_ISSUER_STATUS_BATCH,
-    MAX_MIGRATION_BATCH, METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION,
+    AdminTransferState, AdminTransferStatus, CompromisedSigningKeyRecord, ContractError,
+    GenesisRecord, GovernanceRole, GovernanceRoleAssignment, InterfaceVersion, IssuerError,
+    IssuerPolicyCommitments, IssuerQueryStatus, IssuerRecord, IssuerStatus, IssuerStatusResult,
+    MigrationStatus, RotationRecord, SigningKeyCommitment, TtlStatus, UpgradeApproval,
+    UpgradeReceipt, ADMIN_TRANSFER_EXPIRY_LEDGERS, ISSUER_REGISTRY_INTERFACE_VERSION,
+    MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH, MAX_SIGNING_KEY_COMPROMISE_HISTORY_PAGE,
+    METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION,
     TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS,
     UPGRADE_TIMELOCK_LEDGERS,
 };
@@ -44,6 +45,9 @@ enum DataKey {
     PendingSigningKey(BytesN<32>),
     SigningKeyHistory(BytesN<32>, u32),
     SigningKeyHistoryCount(BytesN<32>),
+    CompromisedSigningKey(BytesN<32>, BytesN<32>, u32),
+    CompromisedSigningKeyHistory(BytesN<32>, u32),
+    CompromisedSigningKeyCount(BytesN<32>),
     RotationHistory(BytesN<32>, u32),
     RotationCount(BytesN<32>),
     ExecutedProposal(BytesN<32>),
@@ -246,6 +250,13 @@ pub struct IssuerRotationNominated {
 pub struct IssuerRotationCancelled {
     pub issuer_id_hash: BytesN<32>,
     pub cancelled_by: Address,
+}
+
+/// Emitted once when an issuer signing-key commitment is declared compromised.
+#[contractevent]
+pub struct IssuerSigningKeyCompromised {
+    pub record: CompromisedSigningKeyRecord,
+    pub marked_by: Address,
 }
 
 // ── capacity and cooldown governance events ─────────────────────────────────
@@ -925,6 +936,17 @@ impl IssuerRegistryContract {
             return Err(IssuerError::InvalidMetadataCommitment);
         }
         Self::get_issuer(env.clone(), issuer_id.clone())?;
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::CompromisedSigningKey(
+                issuer_id.clone(),
+                key_hash.clone(),
+                algorithm,
+            ))
+        {
+            return Err(IssuerError::InvalidTransition);
+        }
         env.storage().persistent().set(
             &DataKey::PendingSigningKey(issuer_id),
             &SigningKeyCommitment {
@@ -948,6 +970,17 @@ impl IssuerRegistryContract {
             .persistent()
             .get(&pending_key)
             .ok_or(IssuerError::InvalidTransition)?;
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::CompromisedSigningKey(
+                issuer_id.clone(),
+                next.key_hash.clone(),
+                next.algorithm,
+            ))
+        {
+            return Err(IssuerError::InvalidTransition);
+        }
         next.activated_ledger = env.ledger().sequence();
         let active_key = DataKey::ActiveSigningKey(issuer_id.clone());
         if let Some(previous) = env
@@ -1004,6 +1037,157 @@ impl IssuerRegistryContract {
             }
         }
         result
+    }
+
+    /// Permanently marks a known active, pending, or retired signing-key
+    /// commitment as compromised. The immutable sidecar is deliberately
+    /// separate from legacy signing-key records to preserve their encoding.
+    pub fn mark_signing_key_compromised(
+        env: Env,
+        issuer_id: BytesN<32>,
+        key_hash: BytesN<32>,
+        algorithm: u32,
+        reason_hash: BytesN<32>,
+    ) -> Result<CompromisedSigningKeyRecord, IssuerError> {
+        Self::assert_operational(&env);
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        Self::require_auth(&admin);
+        if algorithm == 0
+            || Self::is_zero_hash(&env, &key_hash)
+            || Self::is_zero_hash(&env, &reason_hash)
+        {
+            return Err(IssuerError::InvalidMetadataCommitment);
+        }
+        Self::get_issuer(env.clone(), issuer_id.clone())?;
+
+        let marker = DataKey::CompromisedSigningKey(issuer_id.clone(), key_hash.clone(), algorithm);
+        if env.storage().persistent().has(&marker) {
+            return Err(IssuerError::InvalidTransition);
+        }
+
+        let active_key = DataKey::ActiveSigningKey(issuer_id.clone());
+        let pending_key = DataKey::PendingSigningKey(issuer_id.clone());
+        let active: Option<SigningKeyCommitment> = env.storage().persistent().get(&active_key);
+        let pending: Option<SigningKeyCommitment> = env.storage().persistent().get(&pending_key);
+        let active_matches = active
+            .as_ref()
+            .map(|key| key.key_hash == key_hash && key.algorithm == algorithm)
+            .unwrap_or(false);
+        let pending_matches = pending
+            .as_ref()
+            .map(|key| key.key_hash == key_hash && key.algorithm == algorithm)
+            .unwrap_or(false);
+        let history_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SigningKeyHistoryCount(issuer_id.clone()))
+            .unwrap_or(0);
+        let mut known = active_matches || pending_matches;
+        if !known {
+            for index in 0..history_count {
+                let historic: Option<SigningKeyCommitment> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::SigningKeyHistory(issuer_id.clone(), index));
+                if historic
+                    .map(|key| key.key_hash == key_hash && key.algorithm == algorithm)
+                    .unwrap_or(false)
+                {
+                    known = true;
+                    break;
+                }
+            }
+        }
+        if !known {
+            return Err(IssuerError::InvalidTransition);
+        }
+
+        let sequence: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CompromisedSigningKeyCount(issuer_id.clone()))
+            .unwrap_or(0);
+        if sequence == u32::MAX {
+            return Err(IssuerError::InvalidTransition);
+        }
+        let record = CompromisedSigningKeyRecord {
+            record_version: 1,
+            issuer_id_hash: issuer_id.clone(),
+            key_hash,
+            algorithm,
+            effective_ledger: env.ledger().sequence(),
+            reason_hash,
+            sequence,
+        };
+
+        let history_key = DataKey::CompromisedSigningKeyHistory(issuer_id.clone(), sequence);
+        let count_key = DataKey::CompromisedSigningKeyCount(issuer_id);
+        env.storage().persistent().set(&marker, &record);
+        env.storage().persistent().set(&history_key, &record);
+        env.storage().persistent().set(&count_key, &(sequence + 1));
+        for key in [&marker, &history_key, &count_key] {
+            env.storage().persistent().extend_ttl(
+                key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
+        }
+        if active_matches {
+            env.storage().persistent().remove(&active_key);
+        }
+        if pending_matches {
+            env.storage().persistent().remove(&pending_key);
+        }
+        IssuerSigningKeyCompromised {
+            record: record.clone(),
+            marked_by: admin,
+        }
+        .publish(&env);
+        Ok(record)
+    }
+
+    pub fn get_compromised_signing_key(
+        env: Env,
+        issuer_id: BytesN<32>,
+        key_hash: BytesN<32>,
+        algorithm: u32,
+    ) -> Option<CompromisedSigningKeyRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CompromisedSigningKey(
+                issuer_id, key_hash, algorithm,
+            ))
+    }
+
+    pub fn get_compromised_key_history(
+        env: Env,
+        issuer_id: BytesN<32>,
+        cursor: u32,
+        limit: u32,
+    ) -> Result<Vec<CompromisedSigningKeyRecord>, IssuerError> {
+        if limit == 0 || limit > MAX_SIGNING_KEY_COMPROMISE_HISTORY_PAGE {
+            return Err(IssuerError::BatchTooLarge);
+        }
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CompromisedSigningKeyCount(issuer_id.clone()))
+            .unwrap_or(0);
+        let end = cursor.saturating_add(limit).min(count);
+        let mut records = Vec::new(&env);
+        for index in cursor..end {
+            if let Some(record) =
+                env.storage()
+                    .persistent()
+                    .get(&DataKey::CompromisedSigningKeyHistory(
+                        issuer_id.clone(),
+                        index,
+                    ))
+            {
+                records.push_back(record);
+            }
+        }
+        Ok(records)
     }
 
     pub fn set_issuer_policy_commitments(
@@ -3883,6 +4067,107 @@ mod test {
             ),
             Err(Ok(IssuerError::InvalidTransition))
         );
+    }
+
+    #[test]
+    fn compromised_active_key_is_removed_and_cannot_be_reused() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 0x60);
+        let issuer_address = Address::from_str(&env, ISSUER_ONE);
+        let key_hash = bytes(&env, 0x61);
+        client.register_issuer(
+            &issuer_id,
+            &issuer_address,
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
+        client.propose_issuer_signing_key(&issuer_id, &key_hash, &1);
+        client.activate_issuer_signing_key(&issuer_id);
+
+        env.ledger().with_mut(|ledger| ledger.sequence_number = 700);
+        let record =
+            client.mark_signing_key_compromised(&issuer_id, &key_hash, &1, &bytes(&env, 0x62));
+        assert_eq!(record.record_version, 1);
+        assert_eq!(record.effective_ledger, 700);
+        assert_eq!(record.sequence, 0);
+        assert!(client.get_active_issuer_signing_key(&issuer_id).is_none());
+        assert_eq!(
+            client.try_propose_issuer_signing_key(&issuer_id, &key_hash, &1),
+            Err(Ok(IssuerError::InvalidTransition))
+        );
+        assert_eq!(
+            client.try_mark_signing_key_compromised(&issuer_id, &key_hash, &1, &bytes(&env, 0x63),),
+            Err(Ok(IssuerError::InvalidTransition))
+        );
+    }
+
+    #[test]
+    fn compromised_history_is_bounded_and_unknown_keys_fail_atomically() {
+        let (env, client, _admin) = setup();
+        let issuer_id = bytes(&env, 0x64);
+        client.register_issuer(
+            &issuer_id,
+            &Address::from_str(&env, ISSUER_ONE),
+            &bytes(&env, 2),
+            &bytes(&env, 99),
+        );
+        let first = bytes(&env, 0x65);
+        let second = bytes(&env, 0x66);
+        client.propose_issuer_signing_key(&issuer_id, &first, &1);
+        client.activate_issuer_signing_key(&issuer_id);
+        client.propose_issuer_signing_key(&issuer_id, &second, &1);
+        client.activate_issuer_signing_key(&issuer_id);
+        client.mark_signing_key_compromised(&issuer_id, &first, &1, &bytes(&env, 0x67));
+
+        let records = client.get_compromised_key_history(&issuer_id, &0, &1);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records.get(0).unwrap().key_hash, first);
+        assert_eq!(
+            client.try_get_compromised_key_history(&issuer_id, &0, &21),
+            Err(Ok(IssuerError::BatchTooLarge))
+        );
+        assert_eq!(
+            client.try_mark_signing_key_compromised(
+                &issuer_id,
+                &bytes(&env, 0x68),
+                &1,
+                &bytes(&env, 0x69),
+            ),
+            Err(Ok(IssuerError::InvalidTransition))
+        );
+        assert!(client.get_active_issuer_signing_key(&issuer_id).is_some());
+    }
+
+    #[test]
+    fn only_admin_can_mark_a_signing_key_compromised() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(IssuerRegistryContract, ());
+        let client = IssuerRegistryContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let outsider = Address::generate(&env);
+        let issuer = Address::generate(&env);
+        let issuer_id = bytes(&env, 0x70);
+        let key_hash = bytes(&env, 0x71);
+        client.initialize(&admin);
+        client.register_issuer(&issuer_id, &issuer, &bytes(&env, 2), &bytes(&env, 99));
+        client.propose_issuer_signing_key(&issuer_id, &key_hash, &1);
+
+        env.mock_auths(&[MockAuth {
+            address: &outsider,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "mark_signing_key_compromised",
+                args: (issuer_id.clone(), key_hash.clone(), 1u32, bytes(&env, 0x72)).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client
+            .try_mark_signing_key_compromised(&issuer_id, &key_hash, &1, &bytes(&env, 0x72),)
+            .is_err());
+        assert!(client
+            .get_compromised_signing_key(&issuer_id, &key_hash, &1)
+            .is_none());
     }
 }
 
