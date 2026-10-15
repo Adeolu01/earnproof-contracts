@@ -373,7 +373,7 @@ impl InterfaceVersion {
 }
 
 /// The interface version implemented by `issuer-registry`.
-pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
+pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
 
 /// The interface version implemented by `protocol-config`.
 pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
@@ -541,6 +541,11 @@ pub enum IssuerError {
     InvalidMetadataCommitment = 211,
     /// A batch query supplied more identifiers than [`MAX_ISSUER_STATUS_BATCH`].
     BatchTooLarge = 212,
+    /// The assurance policy version or compact assurance tier is outside the
+    /// supported version-1 bounds.
+    InvalidAssuranceLevel = 213,
+    /// A per-issuer monotonic sequence cannot be advanced without overflow.
+    SequenceOverflow = 214,
     /// A requested capacity limit is below the current active-issuer usage and
     /// no explicit override was supplied.
     MaxBelowActiveUsage = 209,
@@ -1017,6 +1022,30 @@ pub struct IssuerPolicyCommitments {
     pub encoding_version: u32,
     pub category_commitment: BytesN<32>,
     pub jurisdiction_commitment: BytesN<32>,
+}
+
+/// Encoding version for issuer assurance tier commitments.
+pub const ISSUER_ASSURANCE_COMMITMENT_VERSION: u32 = 1;
+/// Assurance tiers are deliberately compact public policy identifiers. Raw
+/// accreditation material is never accepted or stored.
+pub const MAX_ISSUER_ASSURANCE_LEVEL: u32 = 255;
+/// Number of most-recent assurance changes retained per issuer.
+pub const ISSUER_ASSURANCE_HISTORY_CAPACITY: u32 = 16;
+/// Maximum number of assurance history records returned by one query.
+pub const MAX_ISSUER_ASSURANCE_HISTORY_PAGE: u32 = 16;
+
+/// Versioned issuer assurance tier committed by registry governance.
+///
+/// `sequence` is monotonic per issuer. Proof policies that bind this value can
+/// retain the exact sequence independently; changing the current tier never
+/// mutates an earlier record or an existing proof.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerAssuranceLevelCommitment {
+    pub commitment_version: u32,
+    pub assurance_level: u32,
+    pub effective_ledger: u32,
+    pub sequence: u32,
 }
 
 /// Maximum schema versions accepted by one bounded status query.

@@ -35,6 +35,8 @@
 210	ReactivationCooldownActive	IssuerError	issuer-registry	returned	after-caller-change	400
 211	InvalidMetadataCommitment	IssuerError	issuer-registry	returned	after-caller-change	400
 212	BatchTooLarge	IssuerError	issuer-registry	returned	after-caller-change	400
+213	InvalidAssuranceLevel	IssuerError	issuer-registry	returned	after-caller-change	400
+214	SequenceOverflow	IssuerError	issuer-registry	returned	after-operator-action	409
 300	ProofAlreadyRegistered	ProofError	proof-registry	returned	never	409
 301	ProofNotFound	ProofError	proof-registry	returned	after-caller-change	404
 302	ProofAlreadyRevoked	ProofError	proof-registry	returned	never	400

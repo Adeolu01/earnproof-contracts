@@ -2,10 +2,12 @@
 
 use earnproof_shared::{
     ContractError, GenesisRecord, GovernanceRole, GovernanceRoleAssignment, InterfaceVersion,
-    IssuerError, IssuerPolicyCommitments, IssuerQueryStatus, IssuerRecord, IssuerStatus,
-    IssuerStatusResult, MigrationStatus, RotationRecord, SigningKeyCommitment, TtlStatus,
-    UpgradeApproval, UpgradeReceipt,
-    ISSUER_REGISTRY_INTERFACE_VERSION, MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH,
+    IssuerAssuranceLevelCommitment, IssuerError, IssuerPolicyCommitments, IssuerQueryStatus,
+    IssuerRecord, IssuerStatus, IssuerStatusResult, MigrationStatus, RotationRecord,
+    SigningKeyCommitment, TtlStatus, UpgradeApproval, UpgradeReceipt,
+    ISSUER_ASSURANCE_COMMITMENT_VERSION, ISSUER_ASSURANCE_HISTORY_CAPACITY,
+    ISSUER_REGISTRY_INTERFACE_VERSION, MAX_ISSUER_ASSURANCE_HISTORY_PAGE,
+    MAX_ISSUER_ASSURANCE_LEVEL, MAX_ISSUER_STATUS_BATCH, MAX_MIGRATION_BATCH,
     METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS,
     TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
 };
@@ -45,6 +47,9 @@ enum DataKey {
     RotationCount(BytesN<32>),
     ExecutedProposal(BytesN<32>),
     IssuerPolicy(BytesN<32>),
+    IssuerAssurance(BytesN<32>),
+    IssuerAssuranceHistory(BytesN<32>, u32),
+    IssuerAssuranceSequence(BytesN<32>),
     /// Monotonic epoch, advanced once per externally visible issuer mutation.
     /// Off-chain consumers poll it as a cheap cache-invalidation signal.
     IssuerEpoch,
@@ -236,6 +241,18 @@ pub struct IssuerRotationNominated {
 pub struct IssuerRotationCancelled {
     pub issuer_id_hash: BytesN<32>,
     pub cancelled_by: Address,
+}
+
+/// Emitted after a governed issuer assurance tier change commits.
+#[contractevent]
+pub struct IssuerAssuranceLevelChanged {
+    pub issuer_id_hash: BytesN<32>,
+    pub commitment_version: u32,
+    pub assurance_level: u32,
+    pub effective_ledger: u32,
+    pub sequence: u32,
+    pub changed_by: Address,
+    pub epoch: u64,
 }
 
 // ── capacity and cooldown governance events ─────────────────────────────────
@@ -952,6 +969,147 @@ impl IssuerRegistryContract {
         env.storage()
             .persistent()
             .get(&DataKey::IssuerPolicy(issuer_id))
+    }
+
+    /// Commits a compact public assurance tier for an issuer.
+    ///
+    /// The current ledger is the exact effective boundary. All validation and
+    /// checked sequence arithmetic complete before storage is changed.
+    pub fn set_issuer_assurance_level(
+        env: Env,
+        issuer_id: BytesN<32>,
+        commitment_version: u32,
+        assurance_level: u32,
+    ) -> Result<IssuerAssuranceLevelCommitment, IssuerError> {
+        Self::assert_operational(&env);
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        Self::require_auth(&admin);
+        if commitment_version != ISSUER_ASSURANCE_COMMITMENT_VERSION
+            || assurance_level == 0
+            || assurance_level > MAX_ISSUER_ASSURANCE_LEVEL
+        {
+            return Err(IssuerError::InvalidAssuranceLevel);
+        }
+        let issuer = Self::get_issuer(env.clone(), issuer_id.clone())?;
+        if issuer.status == IssuerStatus::Revoked {
+            return Err(IssuerError::IssuerRevoked);
+        }
+        let current_key = DataKey::IssuerAssurance(issuer_id.clone());
+        if env
+            .storage()
+            .persistent()
+            .get::<_, IssuerAssuranceLevelCommitment>(&current_key)
+            .map(|current| {
+                current.commitment_version == commitment_version
+                    && current.assurance_level == assurance_level
+            })
+            .unwrap_or(false)
+        {
+            return Err(IssuerError::InvalidTransition);
+        }
+        let sequence_key = DataKey::IssuerAssuranceSequence(issuer_id.clone());
+        let sequence = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&sequence_key)
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(IssuerError::SequenceOverflow)?;
+        let commitment = IssuerAssuranceLevelCommitment {
+            commitment_version,
+            assurance_level,
+            effective_ledger: env.ledger().sequence(),
+            sequence,
+        };
+        let slot = (sequence - 1) % ISSUER_ASSURANCE_HISTORY_CAPACITY;
+        let history_key = DataKey::IssuerAssuranceHistory(issuer_id.clone(), slot);
+        env.storage().persistent().set(&current_key, &commitment);
+        env.storage().persistent().set(&history_key, &commitment);
+        env.storage().persistent().set(&sequence_key, &sequence);
+        Self::extend_issuer_key_ttl(env.clone(), &current_key);
+        Self::extend_issuer_key_ttl(env.clone(), &history_key);
+        Self::extend_issuer_key_ttl(env.clone(), &sequence_key);
+        let epoch = Self::bump_epoch(&env);
+        IssuerAssuranceLevelChanged {
+            issuer_id_hash: issuer_id,
+            commitment_version,
+            assurance_level,
+            effective_ledger: commitment.effective_ledger,
+            sequence,
+            changed_by: admin,
+            epoch,
+        }
+        .publish(&env);
+        Ok(commitment)
+    }
+
+    pub fn get_issuer_assurance_level(
+        env: Env,
+        issuer_id: BytesN<32>,
+    ) -> Option<IssuerAssuranceLevelCommitment> {
+        let key = DataKey::IssuerAssurance(issuer_id);
+        let value = env.storage().persistent().get(&key);
+        if value.is_some() {
+            Self::extend_issuer_key_ttl(env, &key);
+        }
+        value
+    }
+
+    /// Returns a retained immutable assurance record by its binding sequence.
+    pub fn get_issuer_assurance_at_sequence(
+        env: Env,
+        issuer_id: BytesN<32>,
+        sequence: u32,
+    ) -> Option<IssuerAssuranceLevelCommitment> {
+        if sequence == 0 {
+            return None;
+        }
+        let key = DataKey::IssuerAssuranceHistory(
+            issuer_id,
+            (sequence - 1) % ISSUER_ASSURANCE_HISTORY_CAPACITY,
+        );
+        let value: Option<IssuerAssuranceLevelCommitment> = env.storage().persistent().get(&key);
+        match value {
+            Some(record) if record.sequence == sequence => {
+                Self::extend_issuer_key_ttl(env, &key);
+                Some(record)
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns retained assurance history in ascending sequence order.
+    pub fn get_issuer_assurance_history(
+        env: Env,
+        issuer_id: BytesN<32>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<IssuerAssuranceLevelCommitment>, IssuerError> {
+        if limit > MAX_ISSUER_ASSURANCE_HISTORY_PAGE {
+            return Err(IssuerError::BatchTooLarge);
+        }
+        let latest: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::IssuerAssuranceSequence(issuer_id.clone()))
+            .unwrap_or(0);
+        let first = latest
+            .saturating_sub(ISSUER_ASSURANCE_HISTORY_CAPACITY)
+            .saturating_add(1);
+        let mut sequence = first.saturating_add(offset);
+        let mut records = Vec::new(&env);
+        while sequence <= latest && records.len() < limit {
+            if let Some(record) =
+                Self::get_issuer_assurance_at_sequence(env.clone(), issuer_id.clone(), sequence)
+            {
+                records.push_back(record);
+            }
+            if sequence == latest {
+                break;
+            }
+            sequence += 1;
+        }
+        Ok(records)
     }
 
     pub fn suspend_issuer(
