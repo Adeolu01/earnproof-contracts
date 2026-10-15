@@ -376,7 +376,7 @@ impl InterfaceVersion {
 pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 0, 0);
 
 /// The interface version implemented by `protocol-config`.
-pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 1, 0);
+pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 2, 0);
 
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -877,6 +877,44 @@ pub struct CriticalActionProposal {
     pub approvals: Vec<Address>,
     pub created_at: u32,
     pub expires_at: u32,
+}
+
+/// Encoding version for governance action commitments that are separated by
+/// network, contract, and action category.
+pub const GOVERNANCE_ACTION_HASH_VERSION: u32 = 1;
+
+/// Public metadata proving which domain was bound into a proposal identifier.
+/// This is stored beside (rather than inside) the original proposal record so
+/// proposals created by older contract versions remain decodable.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceActionDomain {
+    pub encoding_version: u32,
+    pub network_id: BytesN<32>,
+    pub contract_id: Address,
+    pub action_category: CriticalActionCategory,
+    pub nonce: u32,
+    pub commitment: BytesN<32>,
+}
+
+/// Computes the canonical V1 identifier for a critical governance action.
+/// Soroban XDR supplies unambiguous length and variant framing for every field.
+pub fn governance_action_commitment(
+    env: &Env,
+    contract_id: &Address,
+    action: &CriticalAction,
+    nonce: u32,
+) -> BytesN<32> {
+    let preimage = (
+        Symbol::new(env, "gov_action"),
+        GOVERNANCE_ACTION_HASH_VERSION,
+        env.ledger().network_id(),
+        contract_id.clone(),
+        action.category(),
+        action.clone(),
+        nonce,
+    );
+    env.crypto().sha256(&preimage.to_xdr(env)).to_bytes()
 }
 
 /// One bounded, on-chain summary of a governance change, as stored in the
