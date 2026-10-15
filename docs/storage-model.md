@@ -63,6 +63,18 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 - `deprecate_schema_version(ver)`: extends on deprecation
 - `is_schema_version_approved(ver)`: extends on every read (extend-on-read pattern)
 
+`SchemaReplacement(version)` is an additive persistent sidecar written only by
+an atomic schema deprecation. It records the approved successor, public
+compatibility classification, pointer version, and exact effective ledger.
+Direct and bounded-chain queries extend its TTL. Legacy schemas have no entry,
+and existing proof records are never rewritten.
+
+`MinSchemaActivationNotice` is an additive instance policy with a legacy
+default of zero. `SchemaActivation(version)` is a persistent immutable schedule
+sidecar containing the proposal time, inclusive activation boundary, and policy
+snapshot. Pending schemas fail closed in `is_schema_version_approved`; legacy
+approved schemas without the sidecar remain active.
+
 ---
 
 ### Issuer Registry Contract
@@ -90,6 +102,10 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
 | Compromised Key Count | `CompromisedSigningKeyCount(issuer)` | bounded paged query | Returns `0` | ✓ Yes |
 | Governance Role Delay | `GovernanceRoleDelay(role)` | policy reads and admin writes | Returns `0` for legacy/default policy | ✓ Yes |
 
+| Current assurance tier | `IssuerAssurance(hash)` | governed writes and public reads extend | Returns `None` for legacy issuers | Yes |
+| Assurance history | `IssuerAssuranceHistory(hash, slot)` | bounded ring, direct sequence reads extend | Missing or overwritten sequence returns `None` | Yes |
+| Assurance sequence | `IssuerAssuranceSequence(hash)` | advances only after validated changes | Missing means no assurance commitment | Yes |
+
 **Persistent TTL Extensions**: 
 - `extend_issuer_ttl(hash)`: extends `Issuer(hash)` entry
 - `extend_address_ttl(addr)`: extends `AddressIssuer(addr)` entry
@@ -104,6 +120,18 @@ Soroban does not automatically extend TTLs. Every entry will expire and be archi
   - `set_role_activation_delay()`: stores and extends the per-role policy
 
 **Critical**: Both `Issuer(hash)` and `AddressIssuer(addr)` for a single issuer are extended together. If one expires, the other will too (same operation). Both must be present for `is_active_address()` to succeed.
+
+Issuer assurance is an additive version-1 sidecar. It stores only a numeric
+tier, version, effective ledger, and sequence; accreditation documents and
+their private contents remain off-chain. The 16-entry ring is chronological,
+replay-safe, and never rewrites `IssuerRecord` or an existing proof binding.
+
+Signing-key lifecycle ordering is stored in additive persistent sidecars:
+`SigningKeyUsageSequence(issuer)`, the 32-slot
+`SigningKeyLifecycleHistory(issuer, slot)` ring, and
+`SigningKeyLifecycleState(issuer, key_hash, algorithm)`. These entries contain
+commitment hashes and public transition metadata only. The original
+`SigningKeyCommitment` encoding remains unchanged.
 
 ---
 

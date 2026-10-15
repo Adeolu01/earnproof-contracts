@@ -106,6 +106,8 @@ pub const DEFAULT_SCHEMA_RATE_LIMIT: u32 = u32::MAX;
 
 /// Maximum validity duration that protocol governance may assign to a schema.
 pub const MAX_SCHEMA_VALIDITY_SECONDS: u64 = 3_153_600_000;
+/// Maximum governed notice before a schema may become active (one year).
+pub const MAX_SCHEMA_ACTIVATION_NOTICE_SECONDS: u64 = 31_536_000;
 /// Maximum number of numeric proof types allowed in one schema policy.
 pub const MAX_SCHEMA_PROOF_TYPES: u32 = 16;
 /// Maximum number of nullifier domain versions governance may keep indexed.
@@ -693,6 +695,11 @@ pub enum IssuerError {
     InvalidMetadataCommitment = 211,
     /// A batch query supplied more identifiers than [`MAX_ISSUER_STATUS_BATCH`].
     BatchTooLarge = 212,
+    /// The assurance policy version or compact assurance tier is outside the
+    /// supported version-1 bounds.
+    InvalidAssuranceLevel = 213,
+    /// A per-issuer monotonic sequence cannot be advanced without overflow.
+    SequenceOverflow = 214,
     /// A requested capacity limit is below the current active-issuer usage and
     /// no explicit override was supplied.
     MaxBelowActiveUsage = 209,
@@ -1022,7 +1029,10 @@ pub enum ConfigChangeCategory {
     PauseToggle,
     ScopedPause,
     SchemaApproval,
+    SchemaActivation,
+    SchemaActivationNotice,
     SchemaDeprecation,
+    SchemaReplacement,
     SchemaPayloadLimit,
     SchemaPolicy,
     SchemaRateLimit,
@@ -1037,7 +1047,9 @@ pub enum ConfigChangeCategory {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum CriticalActionCategory {
     SchemaApproval,
+    SchemaActivation,
     SchemaDeprecation,
+    SchemaReplacement,
     SchemaPayloadLimit,
     IssuerRegistryReplacement,
     ProtocolConfigReplacement,
@@ -1049,7 +1061,9 @@ pub enum CriticalActionCategory {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CriticalAction {
     SchemaApproval(u32),
+    SchemaActivation(u32, u64),
     SchemaDeprecation(u32),
+    SchemaReplacement(u32, u32, SchemaCompatibility),
     SchemaPayloadLimit(u32, u32),
     IssuerRegistryReplacement(Address),
     ProtocolConfigReplacement(Address),
@@ -1060,13 +1074,56 @@ impl CriticalAction {
     pub fn category(&self) -> CriticalActionCategory {
         match self {
             Self::SchemaApproval(_) => CriticalActionCategory::SchemaApproval,
+            Self::SchemaActivation(_, _) => CriticalActionCategory::SchemaActivation,
             Self::SchemaDeprecation(_) => CriticalActionCategory::SchemaDeprecation,
+            Self::SchemaReplacement(_, _, _) => CriticalActionCategory::SchemaReplacement,
             Self::SchemaPayloadLimit(_, _) => CriticalActionCategory::SchemaPayloadLimit,
             Self::IssuerRegistryReplacement(_) => CriticalActionCategory::IssuerRegistryReplacement,
             Self::ProtocolConfigReplacement(_) => CriticalActionCategory::ProtocolConfigReplacement,
             Self::ApprovalPolicyUpdate(_) => CriticalActionCategory::ApprovalPolicyUpdate,
         }
     }
+}
+
+/// Compatibility guidance published with a schema replacement pointer.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SchemaCompatibility {
+    BackwardCompatible,
+    MigrationRequired,
+    Breaking,
+}
+
+/// Immutable, versioned pointer from a deprecated schema to its successor.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaReplacementPointer {
+    pub pointer_version: u32,
+    pub deprecated_version: u32,
+    pub replacement_version: u32,
+    pub compatibility: SchemaCompatibility,
+    pub effective_ledger: u32,
+}
+
+/// Immutable activation boundary captured when a schema is scheduled.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaActivationNotice {
+    pub notice_version: u32,
+    pub schema_version: u32,
+    pub proposed_at: u64,
+    pub activates_at: u64,
+    pub minimum_notice_seconds: u64,
+}
+
+/// Query state for a schema activation schedule.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SchemaActivationState {
+    Unknown,
+    Pending,
+    Active,
+    Deprecated,
 }
 
 /// Optional multi-party approval policy for critical protocol actions.
@@ -1278,6 +1335,38 @@ pub struct SigningKeyCommitment {
     pub activated_ledger: u32,
 }
 
+/// Number of most-recent key lifecycle transitions retained per issuer.
+pub const SIGNING_KEY_LIFECYCLE_HISTORY_CAPACITY: u32 = 32;
+/// Maximum lifecycle transitions returned by one query.
+pub const MAX_SIGNING_KEY_LIFECYCLE_PAGE: u32 = 20;
+
+/// Checked advancement used by signing-key lifecycle transitions. Callers
+/// reserve every sequence a compound transition needs before writing state.
+pub fn checked_signing_key_sequence(current: u64, steps: u32) -> Option<u64> {
+    current.checked_add(u64::from(steps))
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SigningKeyLifecycleTransition {
+    Proposed,
+    Activated,
+    Retired,
+    Compromised,
+}
+
+/// Versioned public lifecycle sidecar for an issuer signing-key commitment.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SigningKeyLifecycleRecord {
+    pub record_version: u32,
+    pub key_hash: BytesN<32>,
+    pub algorithm: u32,
+    pub transition: SigningKeyLifecycleTransition,
+    pub sequence: u64,
+    pub effective_ledger: u32,
+}
+
 /// Immutable, privacy-safe evidence that an issuer signing-key commitment was
 /// declared compromised. Raw public or private key material is never stored.
 #[contracttype]
@@ -1302,6 +1391,30 @@ pub struct IssuerPolicyCommitments {
     pub encoding_version: u32,
     pub category_commitment: BytesN<32>,
     pub jurisdiction_commitment: BytesN<32>,
+}
+
+/// Encoding version for issuer assurance tier commitments.
+pub const ISSUER_ASSURANCE_COMMITMENT_VERSION: u32 = 1;
+/// Assurance tiers are deliberately compact public policy identifiers. Raw
+/// accreditation material is never accepted or stored.
+pub const MAX_ISSUER_ASSURANCE_LEVEL: u32 = 255;
+/// Number of most-recent assurance changes retained per issuer.
+pub const ISSUER_ASSURANCE_HISTORY_CAPACITY: u32 = 16;
+/// Maximum number of assurance history records returned by one query.
+pub const MAX_ISSUER_ASSURANCE_HISTORY_PAGE: u32 = 16;
+
+/// Versioned issuer assurance tier committed by registry governance.
+///
+/// `sequence` is monotonic per issuer. Proof policies that bind this value can
+/// retain the exact sequence independently; changing the current tier never
+/// mutates an earlier record or an existing proof.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerAssuranceLevelCommitment {
+    pub commitment_version: u32,
+    pub assurance_level: u32,
+    pub effective_ledger: u32,
+    pub sequence: u32,
 }
 
 /// Maximum schema versions accepted by one bounded status query.
@@ -2056,6 +2169,22 @@ mod proof_context_tests {
         assert!(
             compute_subject_nullifier_commitment(&env, &issuer, 0, &domain, &pseudonym).is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod signing_key_sequence_tests {
+    use super::checked_signing_key_sequence;
+
+    #[test]
+    fn sequence_advancement_rejects_overflow_atomically() {
+        assert_eq!(checked_signing_key_sequence(0, 1), Some(1));
+        assert_eq!(
+            checked_signing_key_sequence(u64::MAX - 1, 1),
+            Some(u64::MAX)
+        );
+        assert_eq!(checked_signing_key_sequence(u64::MAX - 1, 2), None);
+        assert_eq!(checked_signing_key_sequence(u64::MAX, 1), None);
     }
 }
 

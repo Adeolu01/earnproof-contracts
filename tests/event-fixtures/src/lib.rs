@@ -92,7 +92,10 @@ const PROTOCOL_CONFIG_EVENTS: &[&str] = &[
     "paused",
     "unpaused",
     "schema-approved",
+    "schema-activation-scheduled",
+    "minimum-schema-notice-changed",
     "schema-deprecated",
+    "schema-deprecated-with-replacement",
     "schema-predecessor-set",
 ];
 
@@ -185,8 +188,29 @@ fn protocol_config_all_event_fixtures_exist() {
 }
 
 // ---------------------------------------------------------------------------
-// Issuer-registry: no events currently
+// Issuer-registry: legacy empty manifest plus versioned lifecycle fixtures
 // ---------------------------------------------------------------------------
+
+const ISSUER_REGISTRY_EVENTS: &[&str] = &["signing-key-lifecycle-changed"];
+
+#[test]
+fn issuer_registry_lifecycle_event_fixtures_are_valid() {
+    let version = read_contract_version("issuer-registry");
+    let base = fixtures_dir();
+    let dir = format!("{base}/issuer-registry/v1");
+    for name in ISSUER_REGISTRY_EVENTS {
+        let path = format!("{dir}/{name}.json");
+        let fixture = load_fixture(&path);
+        assert_eq!(fixture.contract, "issuer-registry");
+        assert_eq!(fixture.contract_version, version);
+        assert_eq!(fixture.schema_version, 1);
+        assert_eq!(fixture.topics[0], fixture.event);
+        let content = fs::read_to_string(path).unwrap().to_lowercase();
+        for forbidden in ["secret key", "seed phrase", "raw incident"] {
+            assert!(!content.contains(forbidden));
+        }
+    }
+}
 
 #[test]
 fn issuer_registry_no_events_fixture_exists() {

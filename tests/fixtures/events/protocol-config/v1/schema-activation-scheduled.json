@@ -1,0 +1,32 @@
+{
+  "event": "SchemaActivationScheduled",
+  "contract": "protocol-config",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["SchemaActivationScheduled"],
+  "payload": {
+    "version": {
+      "type": "U32",
+      "description": "Schema version scheduled for activation.",
+      "example": 7
+    },
+    "proposed_at": {
+      "type": "U64",
+      "description": "Ledger timestamp at which the activation was committed.",
+      "example": 1000
+    },
+    "activates_at": {
+      "type": "U64",
+      "description": "Immutable inclusive activation boundary.",
+      "example": 1100
+    },
+    "minimum_notice_seconds": {
+      "type": "U64",
+      "description": "Governed minimum notice snapshot applied to this schedule.",
+      "example": 100
+    }
+  },
+  "emitted_by": "approve_schema_at",
+  "description": "Emitted when a schema activation boundary is committed.",
+  "compatibility": "additive"
+}

@@ -1,0 +1,32 @@
+{
+  "event": "SchemaReplacementSet",
+  "contract": "protocol-config",
+  "contract_version": "0.1.0",
+  "schema_version": 1,
+  "topics": ["SchemaReplacementSet"],
+  "payload": {
+    "deprecated_version": {
+      "type": "U32",
+      "description": "Schema version made unavailable for new proofs.",
+      "example": 1
+    },
+    "replacement_version": {
+      "type": "U32",
+      "description": "Approved successor schema version.",
+      "example": 2
+    },
+    "compatibility": {
+      "type": "SchemaCompatibility",
+      "description": "Public migration compatibility classification.",
+      "example": "MigrationRequired"
+    },
+    "effective_ledger": {
+      "type": "U32",
+      "description": "Exact ledger at which the pointer and deprecation committed.",
+      "example": 100
+    }
+  },
+  "emitted_by": "deprecate_schema_to",
+  "description": "Emitted when governance atomically deprecates a schema and identifies its approved successor.",
+  "compatibility": "additive"
+}
