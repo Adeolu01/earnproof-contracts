@@ -2,8 +2,9 @@
 
 use earnproof_shared::{
     ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
-    CriticalActionProposal, GenesisRecord, InterfaceVersion, MigrationStatus, PauseScope,
-    SchemaPolicy, LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
+    CriticalActionProposal, GenesisRecord, GovernanceActionDomain, InterfaceVersion,
+    MigrationStatus, PauseScope, SchemaPolicy, GOVERNANCE_ACTION_HASH_VERSION,
+    LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE,
     CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
     MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
     MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
@@ -11,8 +12,7 @@ use earnproof_shared::{
     SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
-    contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol,
-    Vec,
+    contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Vec,
 };
 
 #[contract]
@@ -49,6 +49,7 @@ enum DataKey {
     ConfigHistoryTotal,
     CriticalActionPolicy,
     CriticalActionProposal(BytesN<32>),
+    CriticalActionDomain(BytesN<32>),
     CriticalActionNonce,
 }
 
@@ -890,8 +891,23 @@ impl ProtocolConfigContract {
         };
         let key = DataKey::CriticalActionProposal(proposal_id.clone());
         env.storage().persistent().set(&key, &proposal);
+        let domain_key = DataKey::CriticalActionDomain(proposal_id.clone());
+        let domain = GovernanceActionDomain {
+            encoding_version: GOVERNANCE_ACTION_HASH_VERSION,
+            network_id: env.ledger().network_id(),
+            contract_id: env.current_contract_address(),
+            action_category: proposal.category,
+            nonce,
+            commitment: proposal_id.clone(),
+        };
+        env.storage().persistent().set(&domain_key, &domain);
         env.storage().persistent().extend_ttl(
             &key,
+            TTL_THRESHOLD_LEDGERS,
+            CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
+        );
+        env.storage().persistent().extend_ttl(
+            &domain_key,
             TTL_THRESHOLD_LEDGERS,
             CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
         );
@@ -920,6 +936,29 @@ impl ProtocolConfigContract {
         proposal
     }
 
+    /// Returns the domain metadata for a V1 proposal, or `None` for a legacy
+    /// proposal created before domain-separated commitments were introduced.
+    pub fn get_critical_action_domain(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Option<GovernanceActionDomain> {
+        let key = DataKey::CriticalActionDomain(proposal_id);
+        let domain = env.storage().persistent().get(&key);
+        if domain.is_some() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS + TTL_THRESHOLD_LEDGERS,
+            );
+        }
+        domain
+    }
+
+    /// Derives a proposal identifier without mutating contract state.
+    pub fn derive_critical_action_id(env: Env, action: CriticalAction, nonce: u32) -> BytesN<32> {
+        Self::critical_action_commitment(&env, &action, nonce)
+    }
+
     pub fn approve_critical_action(
         env: Env,
         proposal_id: BytesN<32>,
@@ -927,6 +966,7 @@ impl ProtocolConfigContract {
     ) -> Result<(), ContractError> {
         let mut proposal = Self::get_critical_action_proposal(env.clone(), proposal_id.clone())
             .ok_or(ContractError::ApprovalProposalNotFound)?;
+        Self::verify_critical_action_domain(&env, &proposal_id, &proposal)?;
         Self::ensure_proposal_live(&env, &proposal)?;
         Self::require_auth(&signer);
         if !proposal.policy.signers.contains(&signer) {
@@ -952,10 +992,16 @@ impl ProtocolConfigContract {
         let admin = Self::get_admin(env.clone())?;
         Self::require_auth(&admin);
         let key = DataKey::CriticalActionProposal(proposal_id.clone());
-        if !env.storage().persistent().has(&key) {
-            return Err(ContractError::ApprovalProposalNotFound);
-        }
+        let proposal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::ApprovalProposalNotFound)?;
+        Self::verify_critical_action_domain(&env, &proposal_id, &proposal)?;
         env.storage().persistent().remove(&key);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CriticalActionDomain(proposal_id.clone()));
         CriticalActionCancelled {
             proposal_id,
             cancelled_by: admin,
@@ -968,6 +1014,7 @@ impl ProtocolConfigContract {
         Self::ensure_not_decommissioned(&env)?;
         let proposal = Self::get_critical_action_proposal(env.clone(), proposal_id.clone())
             .ok_or(ContractError::ApprovalProposalNotFound)?;
+        Self::verify_critical_action_domain(&env, &proposal_id, &proposal)?;
         Self::ensure_proposal_live(&env, &proposal)?;
         if proposal.approvals.len() < proposal.policy.threshold {
             return Err(ContractError::InsufficientApprovals);
@@ -1025,6 +1072,9 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .remove(&DataKey::CriticalActionProposal(proposal_id.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CriticalActionDomain(proposal_id.clone()));
         CriticalActionExecuted { proposal_id }.publish(&env);
         Ok(())
     }
@@ -1522,14 +1572,44 @@ impl ProtocolConfigContract {
     }
 
     fn critical_action_commitment(env: &Env, action: &CriticalAction, nonce: u32) -> BytesN<32> {
-        let commitment = (
-            Symbol::new(env, "critical_action_v1"),
-            env.current_contract_address(),
-            action.category(),
-            action.clone(),
+        earnproof_shared::governance_action_commitment(
+            env,
+            &env.current_contract_address(),
+            action,
             nonce,
+        )
+    }
+
+    fn verify_critical_action_domain(
+        env: &Env,
+        proposal_id: &BytesN<32>,
+        proposal: &CriticalActionProposal,
+    ) -> Result<(), ContractError> {
+        let Some(domain) = env
+            .storage()
+            .persistent()
+            .get::<_, GovernanceActionDomain>(&DataKey::CriticalActionDomain(proposal_id.clone()))
+        else {
+            // Legacy proposals predate the sidecar and retain their original
+            // embedded-policy semantics until they execute, cancel, or expire.
+            return Ok(());
+        };
+        let expected = earnproof_shared::governance_action_commitment(
+            env,
+            &env.current_contract_address(),
+            &proposal.action,
+            domain.nonce,
         );
-        env.crypto().sha256(&commitment.to_xdr(env)).to_bytes()
+        if domain.encoding_version != GOVERNANCE_ACTION_HASH_VERSION
+            || domain.network_id != env.ledger().network_id()
+            || domain.contract_id != env.current_contract_address()
+            || domain.action_category != proposal.category
+            || domain.commitment != *proposal_id
+            || expected != *proposal_id
+        {
+            return Err(ContractError::InvalidState);
+        }
+        Ok(())
     }
 
     fn record_critical_action_change(
@@ -1549,7 +1629,8 @@ mod test {
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
     use earnproof_shared::{
         ConfigChangeCategory, ContractError, CriticalAction, CriticalActionPolicy,
-        CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, TTL_THRESHOLD_LEDGERS,
+        CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, GOVERNANCE_ACTION_HASH_VERSION,
+        TTL_THRESHOLD_LEDGERS,
     };
     use soroban_sdk::{
         testutils::{storage::Persistent as _, Address as _, Ledger as _},
@@ -2573,6 +2654,94 @@ mod test {
         assert!(client
             .get_critical_action_proposal(&changed_parameters)
             .is_some());
+    }
+
+    #[test]
+    fn governance_action_ids_are_domain_separated_by_contract() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::from_str(&env, ADMIN);
+        let action = CriticalAction::SchemaApproval(12);
+
+        let first_id = env.register(ProtocolConfigContract, ());
+        let first = ProtocolConfigContractClient::new(&env, &first_id);
+        first.initialize(&admin);
+        let second_id = env.register(ProtocolConfigContract, ());
+        let second = ProtocolConfigContractClient::new(&env, &second_id);
+        second.initialize(&admin);
+
+        assert_ne!(
+            first.derive_critical_action_id(&action, &1),
+            second.derive_critical_action_id(&action, &1)
+        );
+        assert_ne!(
+            first.derive_critical_action_id(&action, &1),
+            first.derive_critical_action_id(&CriticalAction::SchemaDeprecation(12), &1)
+        );
+    }
+
+    #[test]
+    fn proposal_exposes_and_consumes_its_domain_record() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 1);
+        client.set_critical_action_policy(&policy);
+        let action = CriticalAction::SchemaApproval(22);
+        let proposal_id = client.propose_critical_action(&action);
+
+        let domain = client.get_critical_action_domain(&proposal_id).unwrap();
+        assert_eq!(domain.encoding_version, GOVERNANCE_ACTION_HASH_VERSION);
+        assert_eq!(domain.network_id, env.ledger().network_id());
+        assert_eq!(domain.contract_id, client.address);
+        assert_eq!(domain.action_category, action.category());
+        assert_eq!(domain.commitment, proposal_id);
+
+        client.approve_critical_action(&proposal_id, &signers.get(0).unwrap());
+        client.execute_critical_action(&proposal_id);
+        assert_eq!(client.get_critical_action_domain(&proposal_id), None);
+    }
+
+    #[test]
+    fn mismatched_domain_fails_before_approval_without_mutation() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 1);
+        client.set_critical_action_policy(&policy);
+        let proposal_id = client.propose_critical_action(&CriticalAction::SchemaApproval(23));
+        let mut domain = client.get_critical_action_domain(&proposal_id).unwrap();
+        domain.encoding_version = GOVERNANCE_ACTION_HASH_VERSION + 1;
+        env.as_contract(&client.address, || {
+            env.storage().persistent().set(
+                &DataKey::CriticalActionDomain(proposal_id.clone()),
+                &domain,
+            );
+        });
+
+        assert_eq!(
+            client.try_approve_critical_action(&proposal_id, &signers.get(0).unwrap()),
+            Err(Ok(ContractError::InvalidState))
+        );
+        assert!(client
+            .get_critical_action_proposal(&proposal_id)
+            .unwrap()
+            .approvals
+            .is_empty());
+    }
+
+    #[test]
+    fn legacy_proposal_without_domain_sidecar_remains_operable() {
+        let (env, client, _admin) = setup();
+        let (policy, signers) = enabled_policy(&env, 1);
+        client.set_critical_action_policy(&policy);
+        let proposal_id = client.propose_critical_action(&CriticalAction::SchemaApproval(24));
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::CriticalActionDomain(proposal_id.clone()));
+        });
+
+        assert_eq!(client.get_critical_action_domain(&proposal_id), None);
+        client.approve_critical_action(&proposal_id, &signers.get(0).unwrap());
+        client.execute_critical_action(&proposal_id);
+        assert!(client.is_schema_version_approved(&24));
     }
 
     #[test]
