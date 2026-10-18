@@ -155,7 +155,7 @@ pub struct ErrorSpec {
 }
 
 /// Every published error, ordered by code.
-pub const ERROR_CATALOG: [ErrorSpec; 61] = [
+pub const ERROR_CATALOG: [ErrorSpec; 65] = [
     ErrorSpec {
         code: 1,
         name: "AlreadyInitialized",
@@ -923,6 +923,18 @@ pub const ERROR_CATALOG: [ErrorSpec; 61] = [
         remediation: "Query get_nullifier_domain_versions and submit a nullifier derived under a currently supported version.",
         http_status: 400,
         client_message: "Unsupported nullifier domain version",
+    },
+    ErrorSpec {
+        code: 327,
+        name: "ConsentReceiptAlreadyCommitted",
+        enum_name: "ProofError",
+        domain: Domain::ProofRegistry,
+        status: Status::Returned,
+        cause: "The same consent receipt commitment was already recorded.",
+        retry: Retry::Never,
+        remediation: "Use a distinct receipt hash or receipt version.",
+        http_status: 409,
+        client_message: "Consent receipt already committed",
     },
 ];
 

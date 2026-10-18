@@ -172,8 +172,16 @@ impl Deployment<'_> {
     /// [`crate::ordering`]: a multi-step sequence must be observed step by
     /// step, because the stream cannot be replayed afterwards.
     pub fn capture(&self, operation: impl FnOnce()) -> std::vec::Vec<ObservedEvent> {
+        let before_count = self.env.events().all().events().len();
         operation();
-        self.events()
+        let captured = self.env.events().all();
+        let all_events = captured.events();
+        std::eprintln!("before: {}, after: {}", before_count, all_events.len());
+        all_events
+            .iter()
+            .skip(before_count as usize)
+            .filter_map(|event| ObservedEvent::from_xdr(&self.env, event))
+            .collect()
     }
 
     /// Registers a proof and returns its id hash.

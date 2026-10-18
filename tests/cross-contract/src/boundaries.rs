@@ -132,13 +132,16 @@ fn register_with_root_auth_only(deployment: &Deployment, proof_id: &BytesN<32>) 
     let env = &deployment.env;
     let commitment_hash = commitment(env, 0xC0);
     let expires_at = deployment.expiry();
+    let type_id = soroban_sdk::BytesN::from_array(env, &[1u8; 32]);
+    let pred_id: Option<soroban_sdk::BytesN<32>> = None;
     let args: soroban_sdk::Vec<soroban_sdk::Val> = (
         proof_id.clone(),
         commitment_hash.clone(),
         deployment.issuer.clone(),
         APPROVED_SCHEMA,
         expires_at,
-        soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
+        pred_id,
+        type_id,
     )
         .into_val(env);
 

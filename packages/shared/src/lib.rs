@@ -793,6 +793,8 @@ pub enum ProofError {
     /// The requested subject-nullifier domain version is not currently
     /// supported by protocol governance.
     UnsupportedNullifierDomain = 326,
+    /// The same consent receipt commitment was already recorded.
+    ConsentReceiptAlreadyCommitted = 327,
 }
 
 /// Versioned asset identifier accepted by context-aware proof registration.

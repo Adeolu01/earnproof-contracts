@@ -9,7 +9,7 @@
 //! the fixtures usable as a compatibility contract for indexers rather than
 //! documentation that happened to be true once.
 
-use crate::harness::{hash, read_events, Deployment, ObservedEvent, APPROVED_SCHEMA};
+use crate::harness::{hash, read_events, Deployment, ObservedEvent};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env, Symbol, TryFromVal, Val};
 
@@ -40,6 +40,15 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
     ("schema_approved", &["version"]),
     ("schema_deprecated", &["version"]),
     ("schema_predecessor_set", &["version", "predecessor"]),
+    (
+        "schema_activation_scheduled",
+        &[
+            "version",
+            "proposed_at",
+            "activates_at",
+            "minimum_notice_seconds",
+        ],
+    ),
     // issuer-registry
     (
         "issuer_registered",
@@ -107,6 +116,19 @@ const DECLARED_EVENTS: &[(&str, &[&str])] = &[
             "updated_at",
             "epoch",
         ],
+    ),
+    (
+        "issuer_rotation_nominated",
+        &[
+            "issuer_id_hash",
+            "old_address",
+            "new_address",
+            "expires_at_ledger",
+        ],
+    ),
+    (
+        "issuer_rotation_cancelled",
+        &["issuer_id_hash", "cancelled_by"],
     ),
     // proof-registry
     (
@@ -282,6 +304,7 @@ fn issuer_registry_events_match_their_fixtures() {
 
     for event in deployment.capture(|| {
         deployment.issuers.suspend_issuer(
+            &hash(&deployment.env, 0x54),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -291,6 +314,7 @@ fn issuer_registry_events_match_their_fixtures() {
 
     for event in deployment.capture(|| {
         deployment.issuers.reactivate_issuer(
+            &hash(&deployment.env, 0x55),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -308,6 +332,7 @@ fn issuer_registry_events_match_their_fixtures() {
 
     for event in deployment.capture(|| {
         deployment.issuers.revoke_issuer(
+            &hash(&deployment.env, 0x56),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )

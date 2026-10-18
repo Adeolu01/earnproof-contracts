@@ -49,7 +49,7 @@ pub const CONTRACTS: [&str; 3] = ["issuer-registry", "proof-registry", "protocol
 /// Adding a row here is the second half of adding a storage key; the first is
 /// adding the `DataKey` variant. Doing one without the other fails the tests in
 /// `tests/storage-keys/`.
-pub const STORAGE_NAMESPACES: [StorageNamespace; 66] = [
+pub const STORAGE_NAMESPACES: [StorageNamespace; 99] = [
     StorageNamespace {
         contract: "issuer-registry",
         namespace: "ActiveIssuerCount",
@@ -284,14 +284,34 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 66] = [
     },
     StorageNamespace {
         contract: "issuer-registry",
-        namespace: "SigningKeyLifecycleHistory",
-        arity: 2,
+        namespace: "RevocationTombstone",
+        arity: 1,
         class: StorageClass::Persistent,
-        value: "SigningKeyLifecycleRecord",
+        value: "IssuerRevocationTombstone",
+        owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
         namespace: "SigningKeyHistory",
         arity: 2,
         class: StorageClass::Persistent,
         value: "SigningKeyCommitment",
+        owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "SigningKeyHistoryCount",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "u32",
+        owner: "registry operator",
+    },
+    StorageNamespace {
+        contract: "issuer-registry",
+        namespace: "SigningKeyLifecycleHistory",
+        arity: 2,
+        class: StorageClass::Persistent,
+        value: "SigningKeyLifecycleRecord",
         owner: "registry operator",
     },
     StorageNamespace {
@@ -308,14 +328,6 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 66] = [
         arity: 1,
         class: StorageClass::Persistent,
         value: "u64",
-        namespace: "SigningKeyHistoryCount",
-        arity: 1,
-        class: StorageClass::Persistent,
-        value: "u32",
-        namespace: "RevocationTombstone",
-        arity: 1,
-        class: StorageClass::Persistent,
-        value: "IssuerRevocationTombstone",
         owner: "registry operator",
     },
     StorageNamespace {
@@ -652,6 +664,10 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 66] = [
         arity: 0,
         class: StorageClass::Instance,
         value: "u64",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
         namespace: "PauseAcknowledgementCount",
         arity: 0,
         class: StorageClass::Instance,
@@ -732,14 +748,6 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 66] = [
     },
     StorageNamespace {
         contract: "protocol-config",
-        namespace: "SchemaPayloadLimit",
-        arity: 1,
-        class: StorageClass::Persistent,
-        value: "u32",
-        owner: "protocol operator",
-    },
-    StorageNamespace {
-        contract: "protocol-config",
         namespace: "SchemaLifecycle",
         arity: 1,
         class: StorageClass::Persistent,
@@ -748,10 +756,10 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 66] = [
     },
     StorageNamespace {
         contract: "protocol-config",
-        namespace: "SchemaRateLimit",
+        namespace: "SchemaPayloadLimit",
         arity: 1,
         class: StorageClass::Persistent,
-        value: "SchemaRateLimit",
+        value: "u32",
         owner: "protocol operator",
     },
     StorageNamespace {
@@ -760,6 +768,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 66] = [
         arity: 1,
         class: StorageClass::Persistent,
         value: "u32",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "SchemaRateLimit",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "SchemaRateLimit",
         owner: "protocol operator",
     },
     StorageNamespace {

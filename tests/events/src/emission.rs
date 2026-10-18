@@ -191,6 +191,7 @@ fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
         deployment.issuers.suspend_issuer(
+            &hash(&deployment.env, 0x11),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -208,11 +209,13 @@ fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
 fn reactivate_issuer_emits_issuer_reactivated_once_and_matches_storage() {
     let deployment = Deployment::new();
     deployment.issuers.suspend_issuer(
+        &hash(&deployment.env, 0x12),
         &deployment.issuer_id,
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
     let events = deployment.capture(|| {
         deployment.issuers.reactivate_issuer(
+            &hash(&deployment.env, 0x13),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -231,6 +234,7 @@ fn revoke_issuer_emits_issuer_revoked_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
         deployment.issuers.revoke_issuer(
+            &hash(&deployment.env, 0x14),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -345,7 +349,10 @@ fn admin_revoke_proof_emits_timing_and_admin_flag() {
     let deployment = Deployment::new();
     let proof_id = deployment.register_proof(0x22);
 
-    let events = deployment.capture(|| deployment.proofs.admin_revoke_proof(&proof_id));
+    let events = deployment.capture(|| {
+        let res = deployment.proofs.admin_revoke_proof(&proof_id);
+        std::eprintln!("admin_revoke_proof result: {:?}", res);
+    });
     let event = expect_single(&deployment.env, &events, "proof_revoked");
     let by_admin: bool = event.field(&deployment.env, "by_admin").unwrap();
     let record = deployment.proofs.get_proof(&proof_id);
@@ -382,7 +389,9 @@ fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
 #[test]
 fn each_successful_proof_mutation_emits_one_proof_registry_event() {
     let deployment = Deployment::new();
-    let registration_events = deployment.capture(|| deployment.register_proof(0x23));
+    let registration_events = deployment.capture(|| {
+        deployment.register_proof(0x23);
+    });
     let proof_events: std::vec::Vec<_> = registration_events
         .iter()
         .filter(|event| event.contract == deployment.proofs.address)
