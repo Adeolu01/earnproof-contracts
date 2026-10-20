@@ -164,9 +164,11 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     let no_approval = deployment();
     observed.record(
         "issuer-registry upgrade without approval",
-        code(no_approval
-            .issuers
-            .try_upgrade_contract(&bytes32(&no_approval.env, 0xB1), &2)),
+        code(
+            no_approval
+                .issuers
+                .try_upgrade_contract(&bytes32(&no_approval.env, 0xB1), &2),
+        ),
     );
 
     let early_upgrade = deployment();
@@ -176,9 +178,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         .approve_upgrade(&bytes32(&early_upgrade.env, 0xB3), &early_hash, &2);
     observed.record(
         "issuer-registry upgrade before timelock",
-        code(early_upgrade
-            .issuers
-            .try_upgrade_contract(&early_hash, &2)),
+        code(early_upgrade.issuers.try_upgrade_contract(&early_hash, &2)),
     );
 
     let expired_upgrade = deployment();
@@ -188,17 +188,19 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &expired_hash,
         &2,
     );
-    let expiry_ledger = expired_upgrade.env.ledger().sequence()
-        + earnproof_shared::UPGRADE_APPROVAL_EXPIRY_LEDGERS;
+    let expiry_ledger =
+        expired_upgrade.env.ledger().sequence() + earnproof_shared::UPGRADE_APPROVAL_EXPIRY_LEDGERS;
     expired_upgrade
         .env
         .ledger()
         .set_sequence_number(expiry_ledger);
     observed.record(
         "issuer-registry expired upgrade approval",
-        code(expired_upgrade
-            .issuers
-            .try_upgrade_contract(&expired_hash, &2)),
+        code(
+            expired_upgrade
+                .issuers
+                .try_upgrade_contract(&expired_hash, &2),
+        ),
     );
 
     let mismatched_upgrade = deployment();
@@ -208,17 +210,19 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &approved_hash,
         &2,
     );
-    let executable_ledger = mismatched_upgrade.env.ledger().sequence()
-        + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS;
+    let executable_ledger =
+        mismatched_upgrade.env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS;
     mismatched_upgrade
         .env
         .ledger()
         .set_sequence_number(executable_ledger);
     observed.record(
         "issuer-registry upgrade hash mismatch",
-        code(mismatched_upgrade
-            .issuers
-            .try_upgrade_contract(&bytes32(&mismatched_upgrade.env, 0xB8), &2)),
+        code(
+            mismatched_upgrade
+                .issuers
+                .try_upgrade_contract(&bytes32(&mismatched_upgrade.env, 0xB8), &2),
+        ),
     );
 
     let fresh_config = env.register(ProtocolConfigContract, ());
@@ -529,15 +533,19 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     let env_cyclic = &deployment_cyclic.env;
     observed.record(
         "proof-registry cyclic supersession",
-        code(deployment_cyclic.proofs.try_register_proof_with_predecessor(
-            &bytes32(env_cyclic, 70),
-            &bytes32(env_cyclic, 71),
-            &deployment_cyclic.issuer,
-            &1,
-            &FAR_FUTURE,
-            &Some(bytes32(env_cyclic, 70)),
-            &soroban_sdk::BytesN::from_array(env_cyclic, &[1; 32]),
-        )),
+        code(
+            deployment_cyclic
+                .proofs
+                .try_register_proof_with_predecessor(
+                    &bytes32(env_cyclic, 70),
+                    &bytes32(env_cyclic, 71),
+                    &deployment_cyclic.issuer,
+                    &1,
+                    &FAR_FUTURE,
+                    &Some(bytes32(env_cyclic, 70)),
+                    &soroban_sdk::BytesN::from_array(env_cyclic, &[1; 32]),
+                ),
+        ),
     );
 
     let deployment_cross = deployment();
@@ -574,15 +582,19 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     let env_missing = &deployment_missing.env;
     observed.record(
         "proof-registry predecessor not found",
-        code(deployment_missing.proofs.try_register_proof_with_predecessor(
-            &bytes32(env_missing, 90),
-            &bytes32(env_missing, 91),
-            &deployment_missing.issuer,
-            &1,
-            &FAR_FUTURE,
-            &Some(bytes32(env_missing, 92)),
-            &soroban_sdk::BytesN::from_array(env_missing, &[1; 32]),
-        )),
+        code(
+            deployment_missing
+                .proofs
+                .try_register_proof_with_predecessor(
+                    &bytes32(env_missing, 90),
+                    &bytes32(env_missing, 91),
+                    &deployment_missing.issuer,
+                    &1,
+                    &FAR_FUTURE,
+                    &Some(bytes32(env_missing, 92)),
+                    &soroban_sdk::BytesN::from_array(env_missing, &[1; 32]),
+                ),
+        ),
     );
 
     let deployment_many = deployment();

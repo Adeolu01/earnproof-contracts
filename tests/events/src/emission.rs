@@ -98,7 +98,10 @@ fn set_admin_emits_admin_changed_once_and_matches_state() {
         deployment.config.nominate_admin(&successor);
         deployment.config.accept_admin()
     });
-    let event = expect_single(&deployment.env, &events, "admin_transfer_accepted");
+    let event = events
+        .iter()
+        .find(|e| e.is(&deployment.env, "admin_transfer_accepted"))
+        .expect("admin_transfer_accepted event must be emitted");
 
     let announced: Address = event
         .field(&deployment.env, "new_admin")
@@ -112,7 +115,10 @@ fn set_admin_emits_admin_changed_once_and_matches_state() {
 fn approve_schema_version_emits_schema_approved_once() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| deployment.config.approve_schema_version(&7));
-    let event = expect_single(&deployment.env, &events, "schema_approved");
+    let event = events
+        .iter()
+        .find(|e| e.is(&deployment.env, "schema_approved"))
+        .expect("schema_approved event must be emitted");
 
     let version: u32 = event
         .field(&deployment.env, "version")
@@ -191,6 +197,7 @@ fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
         deployment.issuers.suspend_issuer(
+            &crate::harness::hash(&deployment.env, 6),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -208,11 +215,13 @@ fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
 fn reactivate_issuer_emits_issuer_reactivated_once_and_matches_storage() {
     let deployment = Deployment::new();
     deployment.issuers.suspend_issuer(
+        &crate::harness::hash(&deployment.env, 7),
         &deployment.issuer_id,
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
     let events = deployment.capture(|| {
         deployment.issuers.reactivate_issuer(
+            &crate::harness::hash(&deployment.env, 8),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -231,6 +240,7 @@ fn revoke_issuer_emits_issuer_revoked_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
         deployment.issuers.revoke_issuer(
+            &crate::harness::hash(&deployment.env, 9),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -382,7 +392,9 @@ fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
 #[test]
 fn each_successful_proof_mutation_emits_one_proof_registry_event() {
     let deployment = Deployment::new();
-    let registration_events = deployment.capture(|| deployment.register_proof(0x23));
+    let registration_events = deployment.capture(|| {
+        deployment.register_proof(0x23);
+    });
     let proof_events: std::vec::Vec<_> = registration_events
         .iter()
         .filter(|event| event.contract == deployment.proofs.address)

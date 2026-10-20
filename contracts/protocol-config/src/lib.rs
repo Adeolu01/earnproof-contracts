@@ -1,25 +1,6 @@
 #![no_std]
 
-use earnproof_shared::{
-    AdminTransferState, AdminTransferStatus, ConfigChangeCategory, ConfigChangeSummary,
-    ContractError, CriticalAction, CriticalActionPolicy, CriticalActionProposal, GenesisRecord,
-    InterfaceVersion, MigrationStatus, PauseAcknowledgementRecord, PauseAcknowledgementRole,
-    PauseScope, SchemaPolicy, ADMIN_TRANSFER_EXPIRY_LEDGERS, CONFIG_HISTORY_CAPACITY,
-    CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
-    LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE, MAX_CONFIG_HISTORY_PAGE,
-    MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH, MAX_PAUSE_ACKNOWLEDGEMENT_HISTORY_PAGE,
-    ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
-    CriticalActionProposal, DisputeFilingAnchor, DisputeFilingPolicy, GenesisRecord,
-    InterfaceVersion, MigrationStatus, PauseScope, SchemaLifecyclePolicy, SchemaPolicy,
-    SchemaPolicyDigest, SchemaRateLimit, CONFIG_HISTORY_CAPACITY,
-    CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
-    DEFAULT_SCHEMA_RATE_LIMIT, DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS, DISPUTE_FILING_POLICY_VERSION,
-    LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE, MAX_CONFIG_HISTORY_PAGE,
-    MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH, MAX_NULLIFIER_DOMAIN_VERSIONS,
-    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
-    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION, SHA256_COMMITMENT_ALGORITHM_V1,
-    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
-};
+use earnproof_shared::*;
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol,
     Vec,
@@ -82,6 +63,9 @@ enum DataKey {
     DisputeFilingPolicy,
     SubjectNullifierDomain(u32),
     SubjectNullifierDomains,
+    UpgradePrecondition(BytesN<32>),
+    GovernanceReceipt(BytesN<32>),
+    LatestGovernanceReceipt,
 }
 
 // ── admin transfer events ─────────────────────────────────────────────────────────
@@ -95,6 +79,13 @@ pub struct AdminTransferNominated {
 #[contractevent]
 pub struct AdminTransferAccepted {
     pub new_admin: Address,
+}
+
+#[contractevent]
+pub struct GovernanceReceiptCommitted {
+    pub proposal_id: BytesN<32>,
+    pub receipt_hash: BytesN<32>,
+    pub resulting_config_version: u32,
 }
 
 #[contractevent]
@@ -415,6 +406,25 @@ impl ProtocolConfigContract {
     /// Machine-readable interface version this contract exposes to consumers.
     pub fn interface_version(_env: Env) -> InterfaceVersion {
         PROTOCOL_CONFIG_INTERFACE_VERSION
+    }
+
+    /// Machine-readable event schema registry version.
+    pub fn event_schema_version(_env: Env) -> u32 {
+        PROTOCOL_CONFIG_EVENT_SCHEMA_VERSION
+    }
+
+    /// Supported event schema bounds (min, max, current).
+    pub fn event_schema_bounds(_env: Env) -> EventSchemaBounds {
+        EventSchemaBounds {
+            min_version: 1,
+            max_version: PROTOCOL_CONFIG_EVENT_SCHEMA_VERSION,
+            current_version: PROTOCOL_CONFIG_EVENT_SCHEMA_VERSION,
+        }
+    }
+
+    /// Query whether a specific event schema version is supported.
+    pub fn is_event_schema_supported(_env: Env, version: u32) -> bool {
+        version >= 1 && version <= PROTOCOL_CONFIG_EVENT_SCHEMA_VERSION
     }
 
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
@@ -1037,10 +1047,6 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::MinSchemaActivationNotice, &minimum_notice_seconds);
-            .persistent()
-            .set(&DataKey::SchemaVersion(version), &true);
-        Self::record_schema_approval(&env, version);
-        Self::extend_schema_ttl(env.clone(), version);
         Self::bump_config_version(env.clone());
         Self::append_config_history(
             env.clone(),
@@ -1253,9 +1259,11 @@ impl ProtocolConfigContract {
             .get(&key)
             .unwrap_or_else(|| Self::legacy_schema_policy(&env));
         if env.storage().persistent().has(&key) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
         }
         policy
     }
@@ -1966,7 +1974,6 @@ impl ProtocolConfigContract {
         let commitment = Self::commit(&env, proposal.action.clone());
         match proposal.action.clone() {
             CriticalAction::SchemaApproval(version) => {
-                Self::apply_schema_activation(
                 Self::ensure_nonzero_version(version)?;
                 env.storage()
                     .persistent()
@@ -1975,11 +1982,9 @@ impl ProtocolConfigContract {
                 Self::extend_schema_ttl(env.clone(), version);
                 Self::record_critical_action_change(
                     env.clone(),
-                    version,
-                    env.ledger().timestamp(),
                     ConfigChangeCategory::SchemaApproval,
-                    commitment,
-                )?;
+                    commitment.clone(),
+                );
             }
             CriticalAction::SchemaActivation(version, activates_at) => {
                 Self::apply_schema_activation(
@@ -1987,7 +1992,7 @@ impl ProtocolConfigContract {
                     version,
                     activates_at,
                     ConfigChangeCategory::SchemaActivation,
-                    commitment,
+                    commitment.clone(),
                 )?;
             }
             CriticalAction::SchemaDeprecation(version) => {
@@ -2000,7 +2005,7 @@ impl ProtocolConfigContract {
                 Self::record_critical_action_change(
                     env.clone(),
                     ConfigChangeCategory::SchemaDeprecation,
-                    commitment,
+                    commitment.clone(),
                 );
                 SchemaDeprecated { version }.publish(&env);
             }
@@ -2014,7 +2019,7 @@ impl ProtocolConfigContract {
                     deprecated_version,
                     replacement_version,
                     compatibility,
-                    commitment,
+                    commitment.clone(),
                 )?;
             }
             CriticalAction::SchemaPayloadLimit(version, max_size) => {
@@ -2026,7 +2031,7 @@ impl ProtocolConfigContract {
                 Self::record_critical_action_change(
                     env.clone(),
                     ConfigChangeCategory::SchemaPayloadLimit,
-                    commitment,
+                    commitment.clone(),
                 );
                 SchemaPayloadLimitSet { version, max_size }.publish(&env);
             }
@@ -2035,12 +2040,16 @@ impl ProtocolConfigContract {
                 Self::store_critical_action_policy_with_commitment(
                     env.clone(),
                     policy,
-                    commitment,
+                    commitment.clone(),
                 )?;
             }
             CriticalAction::EmergencyPolicyUpdate(policy) => {
                 Self::validate_emergency_policy(&env, &policy)?;
-                Self::store_emergency_policy_with_commitment(env.clone(), policy, commitment)?;
+                Self::store_emergency_policy_with_commitment(
+                    env.clone(),
+                    policy,
+                    commitment.clone(),
+                )?;
             }
             CriticalAction::IssuerRegistryReplacement(_)
             | CriticalAction::ProtocolConfigReplacement(_) => {
@@ -2059,8 +2068,68 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .remove(&DataKey::CriticalApproverSnapshot(proposal_id.clone()));
+        let resulting_config_version = Self::get_config_version(env.clone());
+        let execution_ledger = env.ledger().sequence();
+        let execution_timestamp = env.ledger().timestamp();
+        let approval_count = Self::eligible_approval_count(&env, &proposal_id, &proposal);
+        let receipt_hash = compute_governance_receipt_hash(
+            &env,
+            GOVERNANCE_RECEIPT_VERSION,
+            &proposal_id,
+            &commitment,
+            approval_count,
+            resulting_config_version,
+            execution_ledger,
+            execution_timestamp,
+        );
+        let receipt = GovernanceExecutionReceipt {
+            receipt_version: GOVERNANCE_RECEIPT_VERSION,
+            proposal_id: proposal_id.clone(),
+            action_commitment: commitment,
+            approval_count,
+            resulting_config_version,
+            execution_ledger,
+            execution_timestamp,
+            receipt_hash: receipt_hash.clone(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::GovernanceReceipt(proposal_id.clone()), &receipt);
+        env.storage()
+            .instance()
+            .set(&DataKey::LatestGovernanceReceipt, &receipt);
+        GovernanceReceiptCommitted {
+            proposal_id: proposal_id.clone(),
+            receipt_hash,
+            resulting_config_version,
+        }
+        .publish(&env);
         CriticalActionExecuted { proposal_id }.publish(&env);
         Ok(())
+    }
+
+    /// Look up committed governance execution receipt by proposal id.
+    pub fn get_governance_receipt(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Option<GovernanceExecutionReceipt> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GovernanceReceipt(proposal_id))
+    }
+
+    /// Look up latest committed governance execution receipt.
+    pub fn get_latest_governance_receipt(env: Env) -> Option<GovernanceExecutionReceipt> {
+        env.storage()
+            .instance()
+            .get(&DataKey::LatestGovernanceReceipt)
+    }
+
+    /// Look up committed upgrade precondition snapshot digest.
+    pub fn get_upgrade_precondition(env: Env, wasm_hash: BytesN<32>) -> Option<BytesN<32>> {
+        env.storage()
+            .instance()
+            .get(&DataKey::UpgradePrecondition(wasm_hash))
     }
 
     /// Returns the active payload-size bound for `version`: the governed
@@ -2280,6 +2349,22 @@ impl ProtocolConfigContract {
             panic!("new_version must be greater than current contract version");
         }
 
+        let dependencies = Vec::new(&env);
+        let is_paused = Self::is_scope_paused(env.clone(), PauseScope::Upgrades);
+        let migration_complete = true;
+        let precondition_digest = compute_precondition_digest(
+            &env,
+            &admin,
+            current,
+            &dependencies,
+            is_paused,
+            migration_complete,
+        );
+        env.storage().instance().set(
+            &DataKey::UpgradePrecondition(wasm_hash.clone()),
+            &precondition_digest,
+        );
+
         env.storage()
             .instance()
             .set(&DataKey::AllowedWasm(wasm_hash.clone()), &new_version);
@@ -2351,6 +2436,30 @@ impl ProtocolConfigContract {
         if new_version <= old_version {
             panic!("upgrade would not advance contract version");
         }
+
+        let expected_precondition: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradePrecondition(wasm_hash.clone()))
+            .unwrap_or_else(|| panic!("missing upgrade precondition snapshot"));
+
+        let dependencies = Vec::new(&env);
+        let is_paused = Self::is_scope_paused(env.clone(), PauseScope::Upgrades);
+        let migration_complete = true;
+        let current_precondition = compute_precondition_digest(
+            &env,
+            &admin,
+            old_version,
+            &dependencies,
+            is_paused,
+            migration_complete,
+        );
+        if expected_precondition != current_precondition {
+            panic!("upgrade precondition mismatch: material state changed since approval");
+        }
+        env.storage()
+            .instance()
+            .remove(&DataKey::UpgradePrecondition(wasm_hash.clone()));
 
         // Consume the allowlist entry before applying so re-entrancy cannot
         // replay the same hash.
@@ -2781,6 +2890,7 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion(version), &true);
+        Self::record_schema_approval(&env, version);
         Self::extend_schema_ttl(env.clone(), version);
         Self::store_schema_activation_notice(
             env.clone(),
@@ -3193,19 +3303,7 @@ mod test {
     extern crate std;
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
-    use earnproof_shared::{
-        ConfigChangeCategory, ContractError, CriticalAction, CriticalActionPolicy, EmergencyAction,
-        EmergencyFastTrackPolicy, GovernanceApprovalEligibility, PauseScope,
-        CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, GOVERNANCE_ACTION_HASH_VERSION,
-        TTL_THRESHOLD_LEDGERS,
-        AdminTransferState, ConfigChangeCategory, ContractError, CriticalAction,
-        CriticalActionPolicy, ADMIN_TRANSFER_EXPIRY_LEDGERS,
-        CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, TTL_THRESHOLD_LEDGERS,
-        ConfigChangeCategory, ContractError, CriticalAction, CriticalActionPolicy,
-        DisputeFilingAnchor, DisputeFilingPolicy, SchemaRateLimit,
-        CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DISPUTE_FILING_POLICY_VERSION,
-        SCHEMA_POLICY_DIGEST_VERSION, TTL_THRESHOLD_LEDGERS,
-    };
+    use earnproof_shared::*;
     use soroban_sdk::{
         testutils::{storage::Persistent as _, Address as _, Ledger as _},
         Address, BytesN, Env, Vec,

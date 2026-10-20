@@ -92,17 +92,15 @@ proptest! {
 
         for (i, op) in ops.into_iter().enumerate() {
             let op_kind = op % 3;
-            let expected_success = match (op_kind, &status) {
-                (0, IssuerStatus::Revoked) => false, // suspend
-                (1, IssuerStatus::Revoked) => false, // reactivate
-                _ => true,
-            };
+            let expected_success = !matches!((op_kind, &status), (_, IssuerStatus::Revoked));
 
             let before = client.get_issuer(&issuer_id);
+            let prop_id = soroban_sdk::BytesN::from_array(&client.env, &[(i as u8).wrapping_add(10); 32]);
+            let reason = soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]);
             let success = try_op(&env, || match op_kind {
-                0 => { client.suspend_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
-                1 => { client.reactivate_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
-                _ => { client.revoke_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
+                0 => { client.suspend_issuer(&prop_id, &issuer_id, &reason); }
+                1 => { client.reactivate_issuer(&prop_id, &issuer_id, &reason); }
+                _ => { client.revoke_issuer(&prop_id, &issuer_id, &reason); }
             });
             prop_assert_eq!(success, expected_success, "iteration {}", i);
 
@@ -190,16 +188,16 @@ proptest! {
 
         let proof_id = bytes(&env, duration as u8);
         let expires_at = base_time.checked_add(duration).unwrap();
-        let result = proof.try_register_proof_with_policy(
+        let result = proof.try_register_proof(
             &proof_id,
             &bytes(&env, 2),
             &issuer_address,
             &2,
             &expires_at,
-            &17,
-            &1,
+            &None,
+            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
         );
-        prop_assert_eq!(result.is_ok(), (1..=10).contains(&duration));
+        prop_assert_eq!(result.is_ok(), duration > 0);
     }
 
     #[test]

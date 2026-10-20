@@ -751,11 +751,11 @@ fn matrix() -> std::vec::Vec<Case> {
         },
     ]
 }
-    /// A fresh, unrelated address that holds no authority anywhere. Generated
-    /// on demand so every negative attempt uses a distinct identity.
-    pub fn attacker(&self) -> Address {
-        Address::generate(&self.env)
-    }
+/// A fresh, unrelated address that holds no authority anywhere. Generated
+/// on demand so every negative attempt uses a distinct identity.
+pub fn attacker(&self) -> Address {
+    Address::generate(&self.env)
+}
 
 /// Guards against a mutating entry point being added without a documented
 /// authorization expectation. Bump only together with
