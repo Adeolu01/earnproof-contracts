@@ -309,7 +309,7 @@ pub const ERROR_CATALOG: [ErrorSpec; 65] = [
         cause: "An upgrade was attempted without a recorded approval.",
         retry: Retry::AfterOperatorAction,
         remediation: "Have the authorized admin approve the target WASM and version before retrying.",
-        http_status: 403,
+        http_status: 412,
         client_message: "No upgrade approval was found",
     },
     ErrorSpec {
@@ -369,7 +369,7 @@ pub const ERROR_CATALOG: [ErrorSpec; 65] = [
         cause: "A critical action requires a threshold-approved proposal instead of direct execution.",
         retry: Retry::AfterOperatorAction,
         remediation: "Create a proposal for the canonical action, collect the configured signer threshold, and execute that proposal.",
-        http_status: 403,
+        http_status: 412,
         client_message: "Threshold approval is required",
     },
     ErrorSpec {
@@ -405,7 +405,7 @@ pub const ERROR_CATALOG: [ErrorSpec; 65] = [
         cause: "The proposal has fewer unique authorized signer approvals than its policy threshold.",
         retry: Retry::AfterOperatorAction,
         remediation: "Collect approvals from additional configured signers before execution.",
-        http_status: 403,
+        http_status: 412,
         client_message: "Approval threshold has not been reached",
     },
     ErrorSpec {
@@ -514,7 +514,7 @@ pub const ERROR_CATALOG: [ErrorSpec; 65] = [
         retry: Retry::AfterCallerChange,
         remediation: "Supply a canonical issuer address and nonzero commitment values required by the selected operation.",
         http_status: 400,
-        client_message: "Invalid issuer address or commitment",
+        client_message: "Invalid issuer address or input",
     },
     ErrorSpec {
         code: 208,

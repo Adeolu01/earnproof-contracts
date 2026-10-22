@@ -164,9 +164,11 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     let no_approval = deployment();
     observed.record(
         "issuer-registry upgrade without approval",
-        code(no_approval
-            .issuers
-            .try_upgrade_contract(&bytes32(&no_approval.env, 0xB1), &2)),
+        code(
+            no_approval
+                .issuers
+                .try_upgrade_contract(&bytes32(&no_approval.env, 0xB1), &2),
+        ),
     );
 
     let early_upgrade = deployment();
@@ -176,9 +178,7 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         .approve_upgrade(&bytes32(&early_upgrade.env, 0xB3), &early_hash, &2);
     observed.record(
         "issuer-registry upgrade before timelock",
-        code(early_upgrade
-            .issuers
-            .try_upgrade_contract(&early_hash, &2)),
+        code(early_upgrade.issuers.try_upgrade_contract(&early_hash, &2)),
     );
 
     let expired_upgrade = deployment();
@@ -188,17 +188,19 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &expired_hash,
         &2,
     );
-    let expiry_ledger = expired_upgrade.env.ledger().sequence()
-        + earnproof_shared::UPGRADE_APPROVAL_EXPIRY_LEDGERS;
+    let expiry_ledger =
+        expired_upgrade.env.ledger().sequence() + earnproof_shared::UPGRADE_APPROVAL_EXPIRY_LEDGERS;
     expired_upgrade
         .env
         .ledger()
         .set_sequence_number(expiry_ledger);
     observed.record(
         "issuer-registry expired upgrade approval",
-        code(expired_upgrade
-            .issuers
-            .try_upgrade_contract(&expired_hash, &2)),
+        code(
+            expired_upgrade
+                .issuers
+                .try_upgrade_contract(&expired_hash, &2),
+        ),
     );
 
     let mismatched_upgrade = deployment();
@@ -208,17 +210,19 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &approved_hash,
         &2,
     );
-    let executable_ledger = mismatched_upgrade.env.ledger().sequence()
-        + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS;
+    let executable_ledger =
+        mismatched_upgrade.env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS;
     mismatched_upgrade
         .env
         .ledger()
         .set_sequence_number(executable_ledger);
     observed.record(
         "issuer-registry upgrade hash mismatch",
-        code(mismatched_upgrade
-            .issuers
-            .try_upgrade_contract(&bytes32(&mismatched_upgrade.env, 0xB8), &2)),
+        code(
+            mismatched_upgrade
+                .issuers
+                .try_upgrade_contract(&bytes32(&mismatched_upgrade.env, 0xB8), &2),
+        ),
     );
 
     let fresh_config = env.register(ProtocolConfigContract, ());
@@ -327,7 +331,9 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
         &bytes32(env, 21),
         &bytes32(env, 99),
     );
+    let prop_rev = bytes32(env, 33);
     initial_dep.issuers.revoke_issuer(
+        &prop_rev,
         &bytes32(env, 20),
         &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
     );
@@ -339,9 +345,11 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
                 .try_update_issuer(&bytes32(env, 20), &bytes32(env, 22)),
         ),
     );
+    let prop_react = bytes32(env, 34);
     observed.record(
         "issuer-registry reactivate revoked issuer",
         code(initial_dep.issuers.try_reactivate_issuer(
+            &prop_react,
             &bytes32(env, 20),
             &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
         )),
@@ -493,7 +501,9 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     // 308: IssuerInactive — suspend the issuer then attempt registration.
     let deployment3 = deployment();
     let env3 = &deployment3.env;
+    let prop_susp = bytes32(env3, 49);
     deployment3.issuers.suspend_issuer(
+        &prop_susp,
         &bytes32(env3, 1),
         &soroban_sdk::BytesN::from_array(env3, &[1u8; 32]),
     );
@@ -529,15 +539,19 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     let env_cyclic = &deployment_cyclic.env;
     observed.record(
         "proof-registry cyclic supersession",
-        code(deployment_cyclic.proofs.try_register_proof_with_predecessor(
-            &bytes32(env_cyclic, 70),
-            &bytes32(env_cyclic, 71),
-            &deployment_cyclic.issuer,
-            &1,
-            &FAR_FUTURE,
-            &Some(bytes32(env_cyclic, 70)),
-            &soroban_sdk::BytesN::from_array(env_cyclic, &[1; 32]),
-        )),
+        code(
+            deployment_cyclic
+                .proofs
+                .try_register_proof_with_predecessor(
+                    &bytes32(env_cyclic, 70),
+                    &bytes32(env_cyclic, 71),
+                    &deployment_cyclic.issuer,
+                    &1,
+                    &FAR_FUTURE,
+                    &Some(bytes32(env_cyclic, 70)),
+                    &soroban_sdk::BytesN::from_array(env_cyclic, &[1; 32]),
+                ),
+        ),
     );
 
     let deployment_cross = deployment();
@@ -574,15 +588,19 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     let env_missing = &deployment_missing.env;
     observed.record(
         "proof-registry predecessor not found",
-        code(deployment_missing.proofs.try_register_proof_with_predecessor(
-            &bytes32(env_missing, 90),
-            &bytes32(env_missing, 91),
-            &deployment_missing.issuer,
-            &1,
-            &FAR_FUTURE,
-            &Some(bytes32(env_missing, 92)),
-            &soroban_sdk::BytesN::from_array(env_missing, &[1; 32]),
-        )),
+        code(
+            deployment_missing
+                .proofs
+                .try_register_proof_with_predecessor(
+                    &bytes32(env_missing, 90),
+                    &bytes32(env_missing, 91),
+                    &deployment_missing.issuer,
+                    &1,
+                    &FAR_FUTURE,
+                    &Some(bytes32(env_missing, 92)),
+                    &soroban_sdk::BytesN::from_array(env_missing, &[1; 32]),
+                ),
+        ),
     );
 
     let deployment_many = deployment();
@@ -664,13 +682,17 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
 
     cap.set_reactivation_cooldown(&1_000);
+    let prop_cap1 = bytes32(env, 67);
     cap.suspend_issuer(
+        &prop_cap1,
         &bytes32(env, 50),
         &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
     );
+    let prop_cap2 = bytes32(env, 68);
     observed.record(
         "issuer-registry reactivate before cooldown",
         code(cap.try_reactivate_issuer(
+            &prop_cap2,
             &bytes32(env, 50),
             &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         )),
@@ -718,7 +740,6 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
             &initial_dep.issuer,
             &1,
             &FAR_FUTURE,
-            &soroban_sdk::BytesN::from_array(env, &[1u8; 32]),
             &FAR_FUTURE,
         )),
     );
@@ -780,10 +801,12 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
     );
 
     cap.set_reactivation_cooldown(&1_000);
-    cap.suspend_issuer(&bytes32(env, 50), &bytes32(env, 57));
+    let prop_cap3 = bytes32(env, 78);
+    cap.suspend_issuer(&prop_cap3, &bytes32(env, 50), &bytes32(env, 57));
+    let prop_cap4 = bytes32(env, 79);
     observed.record(
         "issuer-registry reactivate before cooldown",
-        code(cap.try_reactivate_issuer(&bytes32(env, 50), &bytes32(env, 56))),
+        code(cap.try_reactivate_issuer(&prop_cap4, &bytes32(env, 50), &bytes32(env, 56))),
     );
 
     observed.record(
@@ -797,13 +820,129 @@ fn every_returned_code_is_produced_by_a_real_failure_path() {
 
     // --- proof-registry incompatible dependency -------------------------
     let bad_registry = env.register(BadVersionRegistry, ());
+    let uninit_proofs_id = env.register(ProofRegistryContract, ());
+    let uninit_proofs = ProofRegistryContractClient::new(env, &uninit_proofs_id);
     observed.record(
         "proof-registry bind incompatible issuer registry",
-        code(initial_dep.proofs.try_propose_dependency_replacement(
-            &bytes32(env, 0x13),
+        code(uninit_proofs.try_initialize(
+            &initial_dep.admin,
             &bad_registry,
-            &initial_dep.proofs.get_protocol_config(),
-            &(env.ledger().sequence() + 10),
+            &initial_dep.config_id,
+        )),
+    );
+
+    // --- admin nomination expired ---------------------------------------
+    let expired_nominee = Address::generate(env);
+    initial_dep.config.nominate_admin(&expired_nominee);
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 200_000);
+    observed.record(
+        "protocol-config accept expired admin nomination",
+        code(initial_dep.config.try_accept_admin()),
+    );
+
+    // --- threshold governance failure paths (95, 96, 97, 98, 99) --------
+    let test_config_id = env.register(ProtocolConfigContract, ());
+    let test_config = ProtocolConfigContractClient::new(env, &test_config_id);
+    test_config.initialize(&initial_dep.admin);
+
+    let s1 = Address::generate(env);
+    let s2 = Address::generate(env);
+    let policy_two = earnproof_shared::CriticalActionPolicy {
+        enabled: true,
+        threshold: 2,
+        signers: soroban_sdk::vec![env, s1.clone(), s2.clone()],
+    };
+    test_config.set_critical_action_policy(&policy_two);
+
+    let second_config_id = env.register(ProtocolConfigContract, ());
+    let second_config = ProtocolConfigContractClient::new(env, &second_config_id);
+    second_config.initialize(&initial_dep.admin);
+    let bad_policy = earnproof_shared::CriticalActionPolicy {
+        enabled: true,
+        threshold: 0,
+        signers: soroban_sdk::vec![env, s1.clone()],
+    };
+    observed.record(
+        "protocol-config invalid approval policy",
+        code(second_config.try_set_critical_action_policy(&bad_policy)),
+    );
+
+    let emergency = earnproof_shared::EmergencyFastTrackPolicy {
+        enabled: true,
+        threshold: 1,
+        guardians: soroban_sdk::vec![env, s1.clone()],
+        max_lifetime_ledgers: 20,
+    };
+    observed.record(
+        "protocol-config direct emergency policy update requires threshold approval",
+        code(test_config.try_set_emergency_policy(&emergency)),
+    );
+
+    observed.record(
+        "protocol-config approval proposal not found",
+        code(test_config.try_approve_critical_action(&bytes32(env, 99), &s1)),
+    );
+
+    let action = earnproof_shared::CriticalAction::EmergencyPolicyUpdate(emergency.clone());
+    let prop98 = test_config.propose_critical_action(&action);
+    test_config.approve_critical_action(&prop98, &s1);
+    observed.record(
+        "protocol-config insufficient approvals",
+        code(test_config.try_execute_critical_action(&prop98)),
+    );
+
+    let prop97 = test_config.propose_critical_action(&action);
+    let p97 = test_config.get_critical_action_proposal(&prop97).unwrap();
+    env.ledger().set_sequence_number(p97.expires_at);
+    observed.record(
+        "protocol-config approval proposal expired",
+        code(test_config.try_execute_critical_action(&prop97)),
+    );
+
+    // --- invalid assurance level (213) --------------------------------
+    observed.record(
+        "issuer-registry set invalid assurance level",
+        code(cap.try_set_issuer_assurance_level(&bytes32(env, 50), &2, &1)),
+    );
+
+    // --- sequence overflow (214) ---------------------------------------
+    let seq_id = bytes32(env, 51);
+    cap.register_issuer(
+        &seq_id,
+        &Address::generate(env),
+        &bytes32(env, 52),
+        &bytes32(env, 99),
+    );
+    env.as_contract(&cap.address, || {
+        env.storage().persistent().set(
+            &(
+                soroban_sdk::Symbol::new(env, "IssuerAssuranceSequence"),
+                seq_id.clone(),
+            ),
+            &u32::MAX,
+        );
+    });
+    observed.record(
+        "issuer-registry sequence overflow",
+        code(cap.try_set_issuer_assurance_level(&seq_id, &1, &1)),
+    );
+
+    // --- consent receipt already committed (327) -----------------------
+    let consent_proof_id = bytes32(env, 80);
+    initial_dep.proofs.commit_disclosure_consent(
+        &consent_proof_id,
+        &bytes32(env, 1),
+        &1,
+        &bytes32(env, 2),
+    );
+    observed.record(
+        "proof-registry commit consent receipt already committed",
+        code(initial_dep.proofs.try_commit_disclosure_consent(
+            &consent_proof_id,
+            &bytes32(env, 1),
+            &1,
+            &bytes32(env, 2),
         )),
     );
 
@@ -867,7 +1006,9 @@ fn a_suspended_issuer_is_reported_as_issuer_inactive() {
         &bytes32(env, 41),
         &bytes32(env, 99),
     );
+    let prop_cap5 = bytes32(env, 87);
     deployment.issuers.suspend_issuer(
+        &prop_cap5,
         &bytes32(env, 40),
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );

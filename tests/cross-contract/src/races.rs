@@ -72,14 +72,18 @@ fn apply(deployment: &Deployment, update: Update) {
             }
         }
         Update::DeprecateSchema => {
-            if deployment.config.is_schema_version_approved(&APPROVED_SCHEMA) {
-                deployment
-                    .config
-                    .deprecate_schema_version(&APPROVED_SCHEMA);
+            if deployment
+                .config
+                .is_schema_version_approved(&APPROVED_SCHEMA)
+            {
+                deployment.config.deprecate_schema_version(&APPROVED_SCHEMA);
             }
         }
         Update::ApproveSchema => {
-            if !deployment.config.is_schema_version_approved(&APPROVED_SCHEMA) {
+            if !deployment
+                .config
+                .is_schema_version_approved(&APPROVED_SCHEMA)
+            {
                 deployment.config.approve_schema_version(&APPROVED_SCHEMA);
             }
         }

@@ -10,6 +10,8 @@
 //! identity, because the ledger stores bytes and a compatibility break shows up
 //! there first.
 
+use super::support::consent_receipt_key;
+use super::support::exercised_deployment;
 use super::support::{
     active_issuer_count_key, address_issuer_key, address_ttl_key, admin_key, bytes32,
     config_history_ring_key, config_history_total_key, config_version_key, contract_version_key,

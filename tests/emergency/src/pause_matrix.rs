@@ -207,6 +207,7 @@ fn matrix() -> std::vec::Vec<Case> {
             expected: Available,
             setup: no_setup,
             call: |d| settled(d.issuers.try_suspend_issuer(
+                &hash(&d.env, 0x51),
                 &issuer_id_hash(&d.env, 1),
                 &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32])
             )),
@@ -217,10 +218,12 @@ fn matrix() -> std::vec::Vec<Case> {
             setup: no_setup,
             call: |d| {
                 d.issuers.suspend_issuer(
+                    &hash(&d.env, 0x52),
                     &issuer_id_hash(&d.env, 1),
                     &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
                 );
                 settled(d.issuers.try_reactivate_issuer(
+                    &hash(&d.env, 0x53),
                     &issuer_id_hash(&d.env, 1),
                     &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
                 ))
@@ -231,6 +234,7 @@ fn matrix() -> std::vec::Vec<Case> {
             expected: Available,
             setup: no_setup,
             call: |d| settled(d.issuers.try_revoke_issuer(
+                &hash(&d.env, 0x54),
                 &issuer_id_hash(&d.env, 1),
                 &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32])
             )),

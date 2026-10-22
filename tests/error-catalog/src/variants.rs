@@ -327,6 +327,11 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "UnsupportedNullifierDomain",
             ProofError::UnsupportedNullifierDomain as u32,
         ),
+        (
+            "ProofError",
+            "ConsentReceiptAlreadyCommitted",
+            ProofError::ConsentReceiptAlreadyCommitted as u32,
+        ),
     ]
 }
 

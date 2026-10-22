@@ -105,6 +105,9 @@ impl Model {
                 true
             }
             RevokeIssuer => {
+                if self.issuer_revoked {
+                    return false;
+                }
                 self.issuer_revoked = true;
                 self.issuer_suspended = false;
                 true
@@ -148,27 +151,39 @@ fn apply_to_contracts(deployment: &Deployment, op: Op, step: usize) -> bool {
                 r.is_ok()
             }
         }
-        SuspendIssuer => deployment
-            .issuers
-            .try_suspend_issuer(
-                &issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-            )
-            .is_ok(),
-        ReactivateIssuer => deployment
-            .issuers
-            .try_reactivate_issuer(
-                &issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-            )
-            .is_ok(),
-        RevokeIssuer => deployment
-            .issuers
-            .try_revoke_issuer(
-                &issuer_id,
-                &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
-            )
-            .is_ok(),
+        SuspendIssuer => {
+            let proposal = hash(&deployment.env, 100 + step as u8);
+            deployment
+                .issuers
+                .try_suspend_issuer(
+                    &proposal,
+                    &issuer_id,
+                    &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+                )
+                .is_ok()
+        }
+        ReactivateIssuer => {
+            let proposal = hash(&deployment.env, 150 + step as u8);
+            deployment
+                .issuers
+                .try_reactivate_issuer(
+                    &proposal,
+                    &issuer_id,
+                    &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+                )
+                .is_ok()
+        }
+        RevokeIssuer => {
+            let proposal = hash(&deployment.env, 200 + step as u8);
+            deployment
+                .issuers
+                .try_revoke_issuer(
+                    &proposal,
+                    &issuer_id,
+                    &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
+                )
+                .is_ok()
+        }
         RevokeProof => deployment
             .proofs
             .try_admin_revoke_proof(&fixture_proof)
@@ -389,7 +404,9 @@ fn cross_contract_disagreement_resolves_in_favour_of_containment() {
         let issuer_id = issuer_id_hash(&deployment.env, 1);
 
         if revoke_issuer {
+            let proposal = hash(&deployment.env, 0x94);
             deployment.issuers.revoke_issuer(
+                &proposal,
                 &issuer_id,
                 &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
             );
@@ -427,7 +444,9 @@ fn rejected_operations_leave_no_partial_state() {
     // revoked (blocking suspend/reactivate) and the fixture proof is revoked
     // (blocking a second revocation).
     deployment.config.pause();
+    let proposal = hash(&deployment.env, 0x95);
     deployment.issuers.revoke_issuer(
+        &proposal,
         &issuer_id_hash(&deployment.env, 1),
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );

@@ -4,12 +4,13 @@ use earnproof_shared::{
     AdminTransferState, AdminTransferStatus, ConfigChangeCategory, ConfigChangeSummary,
     ContractError, CriticalAction, CriticalActionPolicy, CriticalActionProposal,
     DisputeFilingAnchor, DisputeFilingPolicy, EmergencyAction, EmergencyActionProposal,
-    EmergencyFastTrackPolicy, GenesisRecord, GovernanceActionDomain,
-    GovernanceApprovalEligibility, GovernanceApprovalSnapshot, GovernanceApproverSnapshot,
-    GovernanceApproverVersion, InterfaceVersion, MigrationStatus, PauseAcknowledgementRecord,
-    PauseAcknowledgementRole, PauseScope, SchemaActivationNotice, SchemaActivationState,
-    SchemaCompatibility, SchemaLifecyclePolicy, SchemaPolicy, SchemaPolicyDigest,
-    SchemaRateLimit, SchemaReplacementPointer, ADMIN_TRANSFER_EXPIRY_LEDGERS, CONFIG_HISTORY_CAPACITY,
+    EmergencyFastTrackPolicy, GenesisRecord, GovernanceActionDomain, GovernanceApprovalEligibility,
+    GovernanceApprovalSnapshot, GovernanceApproverSnapshot, GovernanceApproverVersion,
+    InterfaceVersion, MigrationStatus, PauseAcknowledgementRecord, PauseAcknowledgementRole,
+    PauseScope, SchemaActivationNotice, SchemaActivationState, SchemaCompatibility,
+    SchemaLifecyclePolicy, SchemaPolicy, SchemaPolicyDigest, SchemaRateLimit,
+    SchemaReplacementPointer, SchemaStatusResult, SchemaVersionState,
+    ADMIN_TRANSFER_EXPIRY_LEDGERS, CONFIG_HISTORY_CAPACITY,
     CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
     DEFAULT_SCHEMA_RATE_LIMIT, DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS, DISPUTE_FILING_POLICY_VERSION,
     EMERGENCY_FAST_TRACK_ENCODING_VERSION, GOVERNANCE_ACTION_HASH_VERSION,
@@ -17,9 +18,9 @@ use earnproof_shared::{
     LEGACY_COMMITMENT_ALGORITHM, LEGACY_PROOF_TYPE, MAX_CONFIG_HISTORY_PAGE,
     MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH, MAX_NULLIFIER_DOMAIN_VERSIONS,
     MAX_PAUSE_ACKNOWLEDGEMENT_HISTORY_PAGE, MAX_SCHEMA_ACTIVATION_NOTICE_SECONDS,
-    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_VALIDITY_SECONDS,
-    MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION, SHA256_COMMITMENT_ALGORITHM_V1,
-    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+    MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES, MAX_SCHEMA_STATUS_BATCH,
+    MAX_SCHEMA_VALIDITY_SECONDS, MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
+    SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol,
@@ -1165,6 +1166,31 @@ impl ProtocolConfigContract {
         chain
     }
 
+    pub fn get_schema_statuses(
+        env: Env,
+        versions: Vec<u32>,
+    ) -> Result<Vec<SchemaStatusResult>, ContractError> {
+        if versions.len() > MAX_SCHEMA_STATUS_BATCH {
+            return Err(ContractError::BatchTooLarge);
+        }
+
+        let mut results = Vec::new(&env);
+        for version in versions.iter() {
+            let state = if version == 0 {
+                SchemaVersionState::Unknown
+            } else {
+                let key = DataKey::SchemaVersion(version);
+                match env.storage().persistent().get::<DataKey, bool>(&key) {
+                    Some(true) => SchemaVersionState::Approved,
+                    Some(false) => SchemaVersionState::Deprecated,
+                    None => SchemaVersionState::Unknown,
+                }
+            };
+            results.push_back(SchemaStatusResult { version, state });
+        }
+        Ok(results)
+    }
+
     pub fn is_schema_version_approved(env: Env, version: u32) -> bool {
         if version == 0 {
             return false;
@@ -1250,9 +1276,11 @@ impl ProtocolConfigContract {
             .get(&key)
             .unwrap_or_else(|| Self::legacy_schema_policy(&env));
         if env.storage().persistent().has(&key) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_TO_LEDGERS,
+            );
         }
         policy
     }

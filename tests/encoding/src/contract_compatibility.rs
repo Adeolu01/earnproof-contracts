@@ -12,6 +12,7 @@
 //! indexer reading the event gets the exact value the backend originally
 //! computed, round-tripped through a real contract invocation.
 
+use earnproof_shared::disclosure_consent_commitment;
 use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{Address, BytesN, Env, String, Symbol, TryFromVal, Val};
@@ -182,7 +183,7 @@ fn upgrade_compatibility_attestation_xdr_matches_golden() {
         review_commitment: BytesN::from_array(&env, &[0x33; 32]),
     };
     let encoded = attestation.to_xdr(&env);
-    let actual: String = encoded.iter().map(|byte| format!("{byte:02x}")).collect();
+    let actual: std::string::String = encoded.iter().map(|byte| format!("{byte:02x}")).collect();
 
     let expected = format!(
         "0000001100000001000000040000000f0000000e6162695f636f6d6d69746d656e7400000000000d00000020{}0000000f000000117265766965775f636f6d6d69746d656e740000000000000d00000020{}0000000f0000001273746f726167655f636f6d6d69746d656e7400000000000d00000020{}0000000f0000000776657273696f6e000000000300000001",
@@ -300,31 +301,30 @@ fn proof_registry_accepts_backend_hashes_and_stores_them_queryable_by_the_same_k
 
     let proof_id_hash = bytes_from_hex(&env, vector_hex("proof-1"));
     let commitment_hash = bytes_from_hex(&env, vector_hex("commitment-1"));
-    let disclosure_policy_hash = bytes_from_hex(&env, vector_hex("disclosure-policy-basic"));
 
-    proofs.register_proof_with_policy(
+    let proof_type = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+    proofs.register_proof(
         &proof_id_hash,
         &commitment_hash,
-        &disclosure_policy_hash,
         &issuer_address,
         &1,
         &(env.ledger().timestamp() + 1_000),
-        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
+        &None,
+        &proof_type,
     );
 
     let registered = events(&env)
         .into_iter()
         .find(|event| event.is(&env, "proof_registered"))
         .expect("ProofRegistered must be emitted");
-    let event_policy_hash: BytesN<32> = registered
-        .field(&env, "disclosure_policy_hash")
-        .expect("ProofRegistered must carry disclosure_policy_hash");
-    assert_eq!(event_policy_hash, disclosure_policy_hash);
+    let event_proof_id: BytesN<32> = registered
+        .field(&env, "proof_id_hash")
+        .expect("ProofRegistered must carry proof_id_hash");
+    assert_eq!(event_proof_id, proof_id_hash);
 
     let record = proofs.get_proof(&proof_id_hash);
     assert_eq!(record.proof_id_hash, proof_id_hash);
     assert_eq!(record.commitment_hash, commitment_hash);
-    assert_eq!(record.disclosure_policy_hash, disclosure_policy_hash);
     assert!(proofs.is_valid_proof(&proof_id_hash));
 }
 
@@ -458,12 +458,16 @@ fn consent_receipt_commitment_returned_by_contract_matches_shared_helper() {
     let proof_id = BytesN::from_array(&env, &[0x63; 32]);
     let policy_hash = BytesN::from_array(&env, &[0x64; 32]);
     let receipt_hash = BytesN::from_array(&env, &[0x65; 32]);
+    let pt = BytesN::from_array(&env, &[1u8; 32]);
+    config.approve_proof_type(&pt);
     proofs.register_proof(
         &proof_id,
         &BytesN::from_array(&env, &[0x66; 32]),
         &issuer,
         &1,
         &(env.ledger().timestamp() + 1_000),
+        &None,
+        &pt,
     );
 
     let actual = proofs.commit_disclosure_consent(&proof_id, &policy_hash, &3, &receipt_hash);

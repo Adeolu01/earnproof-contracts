@@ -1,8 +1,8 @@
 #![no_std]
 
 use earnproof_shared::{
-    AdminTransferState, AdminTransferStatus, CompromisedSigningKeyRecord,
-    ContractError, GenesisRecord, GovernanceAssignmentState, GovernanceRole, GovernanceRoleAssignment,
+    AdminTransferState, AdminTransferStatus, CompromisedSigningKeyRecord, ContractError,
+    GenesisRecord, GovernanceAssignmentState, GovernanceRole, GovernanceRoleAssignment,
     GovernanceRoleState, InterfaceVersion, IssuerAssuranceLevelCommitment, IssuerError,
     IssuerPolicyCommitments, IssuerQueryStatus, IssuerRecord, IssuerRevocationResult,
     IssuerRevocationState, IssuerRevocationTombstone, IssuerStatus, IssuerStatusResult,
@@ -12,14 +12,15 @@ use earnproof_shared::{
     ISSUER_ASSURANCE_HISTORY_CAPACITY, ISSUER_REGISTRY_INTERFACE_VERSION,
     ISSUER_REVOCATION_TOMBSTONE_VERSION, MAX_GOVERNANCE_ROLE_ACTIVATION_DELAY_LEDGERS,
     MAX_ISSUER_ASSURANCE_HISTORY_PAGE, MAX_ISSUER_ASSURANCE_LEVEL, MAX_ISSUER_STATUS_BATCH,
-    MAX_MIGRATION_BATCH, MAX_SIGNING_KEY_COMPROMISE_HISTORY_PAGE,
-    MAX_SIGNING_KEY_LIFECYCLE_PAGE, METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION,
-    SIGNING_KEY_LIFECYCLE_HISTORY_CAPACITY, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
-    UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS,
+    MAX_MIGRATION_BATCH, MAX_SIGNING_KEY_COMPROMISE_HISTORY_PAGE, MAX_SIGNING_KEY_LIFECYCLE_PAGE,
+    METADATA_REVISION_INITIAL, MIGRATION_STATUS_VERSION, SIGNING_KEY_LIFECYCLE_HISTORY_CAPACITY,
+    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS,
+    UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec};
 
 const ISSUER_ROTATION_EXPIRY_LEDGERS: u32 = 518_400;
+const MAX_BULK_SUSPENSION_BATCH: u32 = 20;
 
 #[contract]
 pub struct IssuerRegistryContract;
@@ -1249,7 +1250,6 @@ impl IssuerRegistryContract {
         Ok(record)
     }
 
-
     pub fn get_signing_key_usage_sequence(env: Env, issuer_id: BytesN<32>) -> u64 {
         let key = DataKey::SigningKeyUsageSequence(issuer_id);
         let sequence = env.storage().persistent().get(&key).unwrap_or(0);
@@ -1358,8 +1358,9 @@ impl IssuerRegistryContract {
         if pending_matches {
             env.storage().persistent().remove(&pending_key);
         }
-        let lifecycle_sequence = Self::checked_signing_key_sequence(env.clone(), issuer_id.clone(), 1)
-            .unwrap_or(u64::from(sequence + 1));
+        let lifecycle_sequence =
+            Self::checked_signing_key_sequence(env.clone(), issuer_id.clone(), 1)
+                .unwrap_or(u64::from(sequence + 1));
         let _ = Self::append_signing_key_transition(
             env.clone(),
             issuer_id.clone(),
@@ -1635,6 +1636,58 @@ impl IssuerRegistryContract {
             sequence += 1;
         }
         Ok(records)
+    }
+
+    pub fn suspend_issuers(
+        env: Env,
+        issuer_id_hashes: Vec<BytesN<32>>,
+        incident_commitment: BytesN<32>,
+    ) -> Result<(), IssuerError> {
+        Self::assert_operational(&env);
+        if issuer_id_hashes.is_empty()
+            || issuer_id_hashes.len() > MAX_BULK_SUSPENSION_BATCH
+            || incident_commitment == BytesN::from_array(&env, &[0u8; 32])
+        {
+            return Err(IssuerError::InvalidTransition);
+        }
+        let admin = Self::get_admin(env.clone()).map_err(|_| IssuerError::IssuerNotFound)?;
+        Self::require_auth(&admin);
+
+        let mut records = Vec::new(&env);
+        for index in 0..issuer_id_hashes.len() {
+            let issuer_id_hash = issuer_id_hashes.get(index).unwrap();
+            for prior_index in 0..index {
+                if issuer_id_hashes.get(prior_index).unwrap() == issuer_id_hash {
+                    return Err(IssuerError::InvalidTransition);
+                }
+            }
+            let record: IssuerRecord = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Issuer(issuer_id_hash))
+                .ok_or(IssuerError::IssuerNotFound)?;
+            if record.status == IssuerStatus::Revoked {
+                return Err(IssuerError::IssuerRevoked);
+            }
+            if record.status == IssuerStatus::Suspended {
+                return Err(IssuerError::InvalidTransition);
+            }
+            records.push_back(record);
+        }
+
+        let now = env.ledger().timestamp();
+        for index in 0..records.len() {
+            let mut record = records.get(index).unwrap();
+            record.status = IssuerStatus::Suspended;
+            record.reason_commitment = Some(incident_commitment.clone());
+            record.status_effective_ledger = env.ledger().sequence();
+            record.status_effective_timestamp = now;
+            record.updated_at = now;
+            let key = DataKey::Issuer(record.issuer_id_hash.clone());
+            env.storage().persistent().set(&key, &record);
+            Self::extend_issuer_key_ttl(env.clone(), &key);
+        }
+        Ok(())
     }
 
     pub fn suspend_issuer(
@@ -1942,7 +1995,11 @@ impl IssuerRegistryContract {
                 .get::<DataKey, IssuerRecord>(&key)
             {
                 Some(record) => {
-                    Self::extend_issuer_key_ttl(env.clone(), &key);
+                    env.storage().persistent().extend_ttl(
+                        &key,
+                        TTL_THRESHOLD_LEDGERS,
+                        TTL_EXTEND_TO_LEDGERS,
+                    );
                     match record.status {
                         IssuerStatus::Active => IssuerQueryStatus::Active,
                         IssuerStatus::Suspended => IssuerQueryStatus::Suspended,

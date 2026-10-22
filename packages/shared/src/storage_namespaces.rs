@@ -548,6 +548,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 99] = [
     },
     StorageNamespace {
         contract: "proof-registry",
+        namespace: "SubjectNullifier",
+        arity: 1,
+        class: StorageClass::Persistent,
+        value: "SubjectNullifier",
+        owner: "issuing party",
+    },
+    StorageNamespace {
+        contract: "proof-registry",
         namespace: "Successor",
         arity: 0,
         class: StorageClass::Instance,
@@ -560,14 +568,6 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 99] = [
         arity: 1,
         class: StorageClass::Persistent,
         value: "Vec<BytesN<32>>",
-        owner: "issuing party",
-    },
-    StorageNamespace {
-        contract: "proof-registry",
-        namespace: "SubjectNullifier",
-        arity: 1,
-        class: StorageClass::Persistent,
-        value: "SubjectNullifier",
         owner: "issuing party",
     },
     StorageNamespace {
@@ -820,14 +820,6 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 99] = [
     },
     StorageNamespace {
         contract: "protocol-config",
-        namespace: "Successor",
-        arity: 0,
-        class: StorageClass::Instance,
-        value: "Address",
-        owner: "protocol operator",
-    },
-    StorageNamespace {
-        contract: "protocol-config",
         namespace: "SubjectNullifierDomain",
         arity: 1,
         class: StorageClass::Instance,
@@ -840,6 +832,14 @@ pub const STORAGE_NAMESPACES: [StorageNamespace; 99] = [
         arity: 0,
         class: StorageClass::Instance,
         value: "Vec<u32>",
+        owner: "protocol operator",
+    },
+    StorageNamespace {
+        contract: "protocol-config",
+        namespace: "Successor",
+        arity: 0,
+        class: StorageClass::Instance,
+        value: "Address",
         owner: "protocol operator",
     },
 ];

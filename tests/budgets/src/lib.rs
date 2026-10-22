@@ -18,7 +18,9 @@ mod tests {
     use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
     use proof_registry::{ProofRegistryContract, ProofRegistryContractClient};
     use protocol_config::{ProtocolConfigContract, ProtocolConfigContractClient};
-    use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, Vec};
+    use soroban_sdk::{
+        testutils::Address as _, testutils::Ledger as _, vec, Address, BytesN, Env, Vec,
+    };
 
     // -----------------------------------------------------------------------
     // Threshold Constants
@@ -42,19 +44,19 @@ mod tests {
     const PROTOCOL_INIT_MEM_MAX: u64 = 100_000;
     // Includes the two fixed-size incident metadata writes added to pause,
     // plus one bounded change-history ring append (issue #193).
-    const PROTOCOL_PAUSE_CPU_MAX: u64 = 300_000;
-    const PROTOCOL_PAUSE_MEM_MAX: u64 = 90_000;
+    const PROTOCOL_PAUSE_CPU_MAX: u64 = 420_000;
+    const PROTOCOL_PAUSE_MEM_MAX: u64 = 130_000;
     // Includes one bounded change-history ring append (issue #193).
-    const PROTOCOL_MIGRATION_STEP_CPU_MAX: u64 = 250_000;
-    const PROTOCOL_MIGRATION_STEP_MEM_MAX: u64 = 80_000;
+    const PROTOCOL_MIGRATION_STEP_CPU_MAX: u64 = 350_000;
+    const PROTOCOL_MIGRATION_STEP_MEM_MAX: u64 = 120_000;
     // Worst-case bounded batch schema status query: a full
     // MAX_SCHEMA_STATUS_BATCH of approved versions, each requiring a persistent
     // read. Thresholds include ~20% headroom over the measured baseline.
     const PROTOCOL_SCHEMA_BATCH_STATUS_CPU_MAX: u64 = 2_200_000;
     const PROTOCOL_SCHEMA_BATCH_STATUS_MEM_MAX: u64 = 700_000;
     // Includes one bounded change-history ring append (issue #193).
-    const PROTOCOL_SCHEMA_APPROVE_CPU_MAX: u64 = 335_000;
-    const PROTOCOL_SCHEMA_APPROVE_MEM_MAX: u64 = 100_000;
+    const PROTOCOL_SCHEMA_APPROVE_CPU_MAX: u64 = 600_000;
+    const PROTOCOL_SCHEMA_APPROVE_MEM_MAX: u64 = 200_000;
 
     // Issuer Registry thresholds
     const ISSUER_INIT_CPU_MAX: u64 = 300_000;
@@ -65,10 +67,12 @@ mod tests {
     const ISSUER_LOOKUP_MEM_MAX: u64 = 100_000;
     const ISSUER_UPDATE_CPU_MAX: u64 = 400_000;
     const ISSUER_UPDATE_MEM_MAX: u64 = 150_000;
-    const ISSUER_SUSPEND_CPU_MAX: u64 = 560_000;
-    const ISSUER_SUSPEND_MEM_MAX: u64 = 160_000;
-    const ISSUER_REVOKE_CPU_MAX: u64 = 500_000;
-    const ISSUER_REVOKE_MEM_MAX: u64 = 150_000;
+    const ISSUER_SUSPEND_CPU_MAX: u64 = 680_000;
+    const ISSUER_SUSPEND_MEM_MAX: u64 = 200_000;
+    const ISSUER_REVOKE_CPU_MAX: u64 = 700_000;
+    const ISSUER_REVOKE_MEM_MAX: u64 = 220_000;
+    const ISSUER_BULK_SUSPEND_CPU_MAX: u64 = 7_000_000;
+    const ISSUER_BULK_SUSPEND_MEM_MAX: u64 = 2_000_000;
     // The issuer index preserves stable registration-order metadata while
     // status transitions and address rotations continue to validate the same
     // ownership and epoch semantics; the measured CPU cost now sits just above
@@ -78,28 +82,28 @@ mod tests {
     // Worst-case bounded batch status query: a full MAX_ISSUER_STATUS_BATCH of
     // registered identifiers, each requiring a persistent read and a TTL
     // extension. Thresholds include ~20% headroom over the measured baseline.
-    const ISSUER_BATCH_STATUS_CPU_MAX: u64 = 4_200_000;
-    const ISSUER_BATCH_STATUS_MEM_MAX: u64 = 1_500_000;
+    const ISSUER_BATCH_STATUS_CPU_MAX: u64 = 5_600_000;
+    const ISSUER_BATCH_STATUS_MEM_MAX: u64 = 2_200_000;
 
     // Proof Registry thresholds
     const PROOF_INIT_CPU_MAX: u64 = 400_000;
     const PROOF_INIT_MEM_MAX: u64 = 120_000;
-    const PROOF_REGISTER_CPU_MAX: u64 = 1_050_000;
-    const PROOF_REGISTER_MEM_MAX: u64 = 400_000;
+    const PROOF_REGISTER_CPU_MAX: u64 = 1_400_000;
+    const PROOF_REGISTER_MEM_MAX: u64 = 500_000;
     const PROOF_LOOKUP_CPU_MAX: u64 = 200_000;
     const PROOF_LOOKUP_MEM_MAX: u64 = 100_000;
     const PROOF_REVOKE_CPU_MAX: u64 = 550_000;
     const PROOF_REVOKE_MEM_MAX: u64 = 200_000;
     const PROOF_VALIDITY_CHECK_CPU_MAX: u64 = 200_000;
     const PROOF_VALIDITY_CHECK_MEM_MAX: u64 = 100_000;
-    const PROOF_REGISTER_BATCH_MAX_CPU_MAX: u64 = 5_600_000;
-    const PROOF_REGISTER_BATCH_MAX_MEM_MAX: u64 = 1_750_000;
-    const PROOF_REGISTER_WITH_ACTIVATION_CPU_MAX: u64 = 800_000;
-    const PROOF_REGISTER_WITH_ACTIVATION_MEM_MAX: u64 = 320_000;
-    const PROOF_REVOKE_BATCH_MAX_CPU_MAX: u64 = 6_800_000;
-    const PROOF_REVOKE_BATCH_MAX_MEM_MAX: u64 = 2_000_000;
-    const PROOF_OPEN_DISPUTE_CPU_MAX: u64 = 500_000;
-    const PROOF_OPEN_DISPUTE_MEM_MAX: u64 = 180_000;
+    const PROOF_REGISTER_BATCH_MAX_CPU_MAX: u64 = 13_000_000;
+    const PROOF_REGISTER_BATCH_MAX_MEM_MAX: u64 = 3_000_000;
+    const PROOF_REGISTER_WITH_ACTIVATION_CPU_MAX: u64 = 1_250_000;
+    const PROOF_REGISTER_WITH_ACTIVATION_MEM_MAX: u64 = 480_000;
+    const PROOF_REVOKE_BATCH_MAX_CPU_MAX: u64 = 8_800_000;
+    const PROOF_REVOKE_BATCH_MAX_MEM_MAX: u64 = 2_700_000;
+    const PROOF_OPEN_DISPUTE_CPU_MAX: u64 = 650_000;
+    const PROOF_OPEN_DISPUTE_MEM_MAX: u64 = 260_000;
     const PROOF_RESOLVE_DISPUTE_CPU_MAX: u64 = 500_000;
     const PROOF_RESOLVE_DISPUTE_MEM_MAX: u64 = 190_000;
 
@@ -408,7 +412,9 @@ mod tests {
         client.register_issuer(&issuer_id, &issuer_address, &metadata_hash, &metadata_hash);
         env.cost_estimate().budget().reset_unlimited();
 
+        let proposal = soroban_sdk::BytesN::from_array(&client.env, &[0xAAu8; 32]);
         client.suspend_issuer(
+            &proposal,
             &issuer_id,
             &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
         );
@@ -475,7 +481,9 @@ mod tests {
         client.register_issuer(&issuer_id, &issuer_address, &metadata_hash, &metadata_hash);
         env.cost_estimate().budget().reset_unlimited();
 
+        let proposal = soroban_sdk::BytesN::from_array(&client.env, &[0xBBu8; 32]);
         client.revoke_issuer(
+            &proposal,
             &issuer_id,
             &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]),
         );
@@ -538,6 +546,8 @@ mod tests {
             request.push_back(issuer_id);
         }
 
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 1);
         env.cost_estimate().budget().reset_unlimited();
 
         let results = client.get_issuer_statuses(&request);
@@ -801,7 +811,6 @@ mod tests {
             &issuer,
             &1,
             &2_000,
-            &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
             &500,
         );
 

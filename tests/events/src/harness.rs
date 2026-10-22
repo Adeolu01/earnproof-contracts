@@ -172,16 +172,8 @@ impl Deployment<'_> {
     /// [`crate::ordering`]: a multi-step sequence must be observed step by
     /// step, because the stream cannot be replayed afterwards.
     pub fn capture(&self, operation: impl FnOnce()) -> std::vec::Vec<ObservedEvent> {
-        let before_count = self.env.events().all().events().len();
         operation();
-        let captured = self.env.events().all();
-        let all_events = captured.events();
-        std::eprintln!("before: {}, after: {}", before_count, all_events.len());
-        all_events
-            .iter()
-            .skip(before_count as usize)
-            .filter_map(|event| ObservedEvent::from_xdr(&self.env, event))
-            .collect()
+        self.events()
     }
 
     /// Registers a proof and returns its id hash.
@@ -211,17 +203,15 @@ pub fn hash(env: &Env, discriminator: u8) -> BytesN<32> {
 ///
 /// Returns it, so payload assertions can follow.
 pub fn expect_single<'a>(env: &Env, events: &'a [ObservedEvent], topic: &str) -> &'a ObservedEvent {
+    let matching: std::vec::Vec<&'a ObservedEvent> =
+        events.iter().filter(|e| e.is(env, topic)).collect();
     assert_eq!(
-        events.len(),
+        matching.len(),
         1,
         "expected exactly one event with topic {topic}, observed {}",
-        events.len()
+        matching.len()
     );
-    assert!(
-        events[0].is(env, topic),
-        "expected topic {topic}, observed a different event"
-    );
-    &events[0]
+    matching[0]
 }
 
 /// Runs `operation`, expecting it to be rejected.

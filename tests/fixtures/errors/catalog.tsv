@@ -13,15 +13,15 @@
 63	AdminNominationExpired	ContractError	common	returned	after-operator-action	409
 64	BatchTooLarge	ContractError	common	returned	after-caller-change	400
 80	ProtocolPaused	ContractError	common	reserved	after-operator-action	503
-90	NoUpgradeApproval	ContractError	common	returned	after-operator-action	403
+90	NoUpgradeApproval	ContractError	common	returned	after-operator-action	412
 91	UpgradeTimelockNotElapsed	ContractError	common	returned	after-operator-action	409
 92	UpgradeApprovalExpired	ContractError	common	returned	after-operator-action	409
 93	WasmHashMismatch	ContractError	common	returned	after-caller-change	400
 94	InvalidTimingConfig	ContractError	common	returned	after-caller-change	400
-95	ThresholdApprovalRequired	ContractError	common	returned	after-operator-action	403
+95	ThresholdApprovalRequired	ContractError	common	returned	after-operator-action	412
 96	ApprovalProposalNotFound	ContractError	common	returned	after-caller-change	404
 97	ApprovalProposalExpired	ContractError	common	returned	after-operator-action	409
-98	InsufficientApprovals	ContractError	common	returned	after-operator-action	403
+98	InsufficientApprovals	ContractError	common	returned	after-operator-action	412
 99	InvalidApprovalPolicy	ContractError	common	returned	after-caller-change	400
 200	IssuerAlreadyRegistered	IssuerError	issuer-registry	returned	never	409
 201	IssuerNotFound	IssuerError	issuer-registry	returned	after-caller-change	404
@@ -65,3 +65,4 @@
 324	TooManySuccessors	ProofError	proof-registry	returned	never	400
 325	DisputeFilingWindowClosed	ProofError	proof-registry	returned	never	400
 326	UnsupportedNullifierDomain	ProofError	proof-registry	returned	after-operator-action	400
+327	ConsentReceiptAlreadyCommitted	ProofError	proof-registry	returned	never	409

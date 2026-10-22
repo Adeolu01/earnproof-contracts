@@ -5,17 +5,18 @@
 
 #[allow(unused_imports)]
 use earnproof_shared::{
-    is_interface_compatible, AdminTransferState, AdminTransferStatus, ApprovalQuery,
-    ApprovalStatus, ArchivedProofRecord, ContractError, DisputeActorClass, DisputeFilingAnchor,
-    DisputeFilingEligibility, DisputeFilingPolicy, DisputeFilingStatus, DisputeRecord,
-    DisputeStatus, GenesisRecord, InterfaceVersion, MigrationStatus, PauseAcknowledgementRecord,
-    PauseAcknowledgementRole, PauseScope, ProofError, ProofPayloadRecord, ProofRecord,
-    ProofRegistrationInput, ProofStatus, ProofValidity, ProofValidityDetails, SchemaRateLimit,
-    SchemaRateLimitUsage, SubjectNullifier, TtlStatus, UpgradeApproval, UpgradeApprovalMetadata,
-    UpgradeApprovalRecord, UpgradeHistoryRecord, UpgradeReceipt, ADMIN_TRANSFER_EXPIRY_LEDGERS,
-    MAX_MIGRATION_BATCH, MAX_PAUSE_ACKNOWLEDGEMENT_HISTORY_PAGE, MAX_PROOF_BATCH_SIZE,
-    MIGRATION_STATUS_VERSION, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
-    UPGRADE_APPROVAL_EXPIRY_LEDGERS, UPGRADE_TIMELOCK_LEDGERS, disclosure_consent_commitment,
+    disclosure_consent_commitment, is_interface_compatible, AdminTransferState,
+    AdminTransferStatus, ApprovalQuery, ApprovalStatus, ArchivedProofRecord, ContractError,
+    DisputeActorClass, DisputeFilingAnchor, DisputeFilingEligibility, DisputeFilingPolicy,
+    DisputeFilingStatus, DisputeRecord, DisputeStatus, GenesisRecord, InterfaceVersion,
+    MigrationStatus, PauseAcknowledgementRecord, PauseAcknowledgementRole, PauseScope, ProofError,
+    ProofPayloadRecord, ProofRecord, ProofRegistrationInput, ProofStatus, ProofValidity,
+    ProofValidityDetails, SchemaRateLimit, SchemaRateLimitUsage, SubjectNullifier, TtlStatus,
+    UpgradeApproval, UpgradeApprovalMetadata, UpgradeApprovalRecord, UpgradeHistoryRecord,
+    UpgradeReceipt, ADMIN_TRANSFER_EXPIRY_LEDGERS, MAX_MIGRATION_BATCH,
+    MAX_PAUSE_ACKNOWLEDGEMENT_HISTORY_PAGE, MAX_PROOF_BATCH_SIZE, MIGRATION_STATUS_VERSION,
+    TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS, UPGRADE_APPROVAL_EXPIRY_LEDGERS,
+    UPGRADE_TIMELOCK_LEDGERS,
 };
 use soroban_sdk::{
     contract, contractclient, contractevent, contractimpl, contracttype, Address, Bytes, BytesN,

@@ -93,16 +93,16 @@ proptest! {
         for (i, op) in ops.into_iter().enumerate() {
             let op_kind = op % 3;
             let expected_success = match (op_kind, &status) {
-                (0, IssuerStatus::Revoked) => false, // suspend
-                (1, IssuerStatus::Revoked) => false, // reactivate
+                (_, IssuerStatus::Revoked) => false,
                 _ => true,
             };
 
             let before = client.get_issuer(&issuer_id);
+            let proposal = soroban_sdk::BytesN::from_array(&env, &[((i * 3 + op_kind as usize + 1) % 250 + 1) as u8; 32]);
             let success = try_op(&env, || match op_kind {
-                0 => { client.suspend_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
-                1 => { client.reactivate_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
-                _ => { client.revoke_issuer(&issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
+                0 => { client.suspend_issuer(&proposal, &issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
+                1 => { client.reactivate_issuer(&proposal, &issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
+                _ => { client.revoke_issuer(&proposal, &issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
             });
             prop_assert_eq!(success, expected_success, "iteration {}", i);
 
@@ -190,16 +190,17 @@ proptest! {
 
         let proof_id = bytes(&env, duration as u8);
         let expires_at = base_time.checked_add(duration).unwrap();
-        let result = proof.try_register_proof_with_policy(
+        let proof_type = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
+        let result = proof.try_register_proof(
             &proof_id,
             &bytes(&env, 2),
             &issuer_address,
             &2,
             &expires_at,
-            &17,
-            &1,
+            &None,
+            &proof_type,
         );
-        prop_assert_eq!(result.is_ok(), (1..=10).contains(&duration));
+        prop_assert_eq!(result.is_ok(), duration > 0);
     }
 
     #[test]

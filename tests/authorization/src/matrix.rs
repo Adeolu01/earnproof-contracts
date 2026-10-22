@@ -391,11 +391,21 @@ fn matrix() -> std::vec::Vec<Case> {
             setup: no_setup,
             call: |d, identity| {
                 let reason = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
-                let args: soroban_sdk::Vec<Val> = (&d.issuer_id, &reason).into_val(&d.env);
+                let args: soroban_sdk::Vec<Val> = (
+                    &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                    &d.issuer_id,
+                    &reason,
+                )
+                    .into_val(&d.env);
                 match identity {
-                    Identity::Missing => {
-                        d.issuers.try_suspend_issuer(&d.issuer_id, &reason).is_ok()
-                    }
+                    Identity::Missing => d
+                        .issuers
+                        .try_suspend_issuer(
+                            &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                            &d.issuer_id,
+                            &reason,
+                        )
+                        .is_ok(),
                     Identity::Wrong => {
                         authorize(
                             &d.env,
@@ -404,11 +414,23 @@ fn matrix() -> std::vec::Vec<Case> {
                             "suspend_issuer",
                             args.clone(),
                         );
-                        d.issuers.try_suspend_issuer(&d.issuer_id, &reason).is_ok()
+                        d.issuers
+                            .try_suspend_issuer(
+                                &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                                &d.issuer_id,
+                                &reason,
+                            )
+                            .is_ok()
                     }
                     Identity::Authorized => {
                         authorize(&d.env, &d.admin, &d.issuers_address, "suspend_issuer", args);
-                        d.issuers.try_suspend_issuer(&d.issuer_id, &reason).is_ok()
+                        d.issuers
+                            .try_suspend_issuer(
+                                &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                                &d.issuer_id,
+                                &reason,
+                            )
+                            .is_ok()
                     }
                 }
             },
@@ -420,12 +442,14 @@ fn matrix() -> std::vec::Vec<Case> {
             // rejected by a state precondition rather than by authorization.
             setup: |d| d.suspend_issuer(&d.issuer_id),
             call: |d, identity| {
+                let proposal = soroban_sdk::BytesN::from_array(&d.env, &[2u8; 32]);
                 let reason = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
-                let args: soroban_sdk::Vec<Val> = (&d.issuer_id, &reason).into_val(&d.env);
+                let args: soroban_sdk::Vec<Val> =
+                    (&proposal, &d.issuer_id, &reason).into_val(&d.env);
                 match identity {
                     Identity::Missing => d
                         .issuers
-                        .try_reactivate_issuer(&d.issuer_id, &reason)
+                        .try_reactivate_issuer(&proposal, &d.issuer_id, &reason)
                         .is_ok(),
                     Identity::Wrong => {
                         authorize(
@@ -436,7 +460,7 @@ fn matrix() -> std::vec::Vec<Case> {
                             args.clone(),
                         );
                         d.issuers
-                            .try_reactivate_issuer(&d.issuer_id, &reason)
+                            .try_reactivate_issuer(&proposal, &d.issuer_id, &reason)
                             .is_ok()
                     }
                     Identity::Authorized => {
@@ -448,7 +472,7 @@ fn matrix() -> std::vec::Vec<Case> {
                             args,
                         );
                         d.issuers
-                            .try_reactivate_issuer(&d.issuer_id, &reason)
+                            .try_reactivate_issuer(&proposal, &d.issuer_id, &reason)
                             .is_ok()
                     }
                 }
@@ -459,10 +483,15 @@ fn matrix() -> std::vec::Vec<Case> {
             uninitialized: false,
             setup: no_setup,
             call: |d, identity| {
+                let proposal = soroban_sdk::BytesN::from_array(&d.env, &[3u8; 32]);
                 let reason = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
-                let args: soroban_sdk::Vec<Val> = (&d.issuer_id, &reason).into_val(&d.env);
+                let args: soroban_sdk::Vec<Val> =
+                    (&proposal, &d.issuer_id, &reason).into_val(&d.env);
                 match identity {
-                    Identity::Missing => d.issuers.try_revoke_issuer(&d.issuer_id, &reason).is_ok(),
+                    Identity::Missing => d
+                        .issuers
+                        .try_revoke_issuer(&proposal, &d.issuer_id, &reason)
+                        .is_ok(),
                     Identity::Wrong => {
                         authorize(
                             &d.env,
@@ -471,11 +500,15 @@ fn matrix() -> std::vec::Vec<Case> {
                             "revoke_issuer",
                             args.clone(),
                         );
-                        d.issuers.try_revoke_issuer(&d.issuer_id, &reason).is_ok()
+                        d.issuers
+                            .try_revoke_issuer(&proposal, &d.issuer_id, &reason)
+                            .is_ok()
                     }
                     Identity::Authorized => {
                         authorize(&d.env, &d.admin, &d.issuers_address, "revoke_issuer", args);
-                        d.issuers.try_revoke_issuer(&d.issuer_id, &reason).is_ok()
+                        d.issuers
+                            .try_revoke_issuer(&proposal, &d.issuer_id, &reason)
+                            .is_ok()
                     }
                 }
             },
@@ -507,7 +540,7 @@ fn matrix() -> std::vec::Vec<Case> {
                     Identity::Authorized => {
                         authorize(
                             &d.env,
-                            &d.admin,
+                            &d.issuer,
                             &d.issuers_address,
                             "rotate_issuer_address",
                             args,
@@ -563,25 +596,29 @@ fn matrix() -> std::vec::Vec<Case> {
                 let proof_id = hash(&d.env, 0x80);
                 let commitment = hash(&d.env, 0x81);
                 let expires_at = d.env.ledger().timestamp() + 100_000;
+                let pt = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
+                let pred: Option<soroban_sdk::BytesN<32>> = None;
                 let args: soroban_sdk::Vec<Val> = (
                     &proof_id,
                     &commitment,
                     &d.issuer,
                     &APPROVED_SCHEMA,
                     &expires_at,
-                    &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                    &pred,
+                    &pt,
                 )
                     .into_val(&d.env);
                 match identity {
                     Identity::Missing => d
                         .proofs
-                        .try_register_proof_with_type_identifier(
+                        .try_register_proof(
                             &proof_id,
                             &commitment,
                             &d.issuer,
                             &APPROVED_SCHEMA,
                             &expires_at,
-                            &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                            &pred,
+                            &pt,
                         )
                         .is_ok(),
                     // The realistic "wrong" signer is a *different active
@@ -592,36 +629,32 @@ fn matrix() -> std::vec::Vec<Case> {
                             &d.env,
                             &d.second_issuer,
                             &d.proofs_address,
-                            "register_proof_with_type_identifier",
+                            "register_proof",
                             args.clone(),
                         );
                         d.proofs
-                            .try_register_proof_with_type_identifier(
+                            .try_register_proof(
                                 &proof_id,
                                 &commitment,
                                 &d.issuer,
                                 &APPROVED_SCHEMA,
                                 &expires_at,
-                                &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                                &pred,
+                                &pt,
                             )
                             .is_ok()
                     }
                     Identity::Authorized => {
-                        authorize(
-                            &d.env,
-                            &d.issuer,
-                            &d.proofs_address,
-                            "register_proof_with_type_identifier",
-                            args,
-                        );
+                        authorize(&d.env, &d.issuer, &d.proofs_address, "register_proof", args);
                         d.proofs
-                            .try_register_proof_with_type_identifier(
+                            .try_register_proof(
                                 &proof_id,
                                 &commitment,
                                 &d.issuer,
                                 &APPROVED_SCHEMA,
                                 &expires_at,
-                                &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
+                                &pred,
+                                &pt,
                             )
                             .is_ok()
                     }
@@ -751,11 +784,6 @@ fn matrix() -> std::vec::Vec<Case> {
         },
     ]
 }
-    /// A fresh, unrelated address that holds no authority anywhere. Generated
-    /// on demand so every negative attempt uses a distinct identity.
-    pub fn attacker(&self) -> Address {
-        Address::generate(&self.env)
-    }
 
 /// Guards against a mutating entry point being added without a documented
 /// authorization expectation. Bump only together with
