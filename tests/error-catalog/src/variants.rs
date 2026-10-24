@@ -332,6 +332,31 @@ fn declared_variants() -> std::vec::Vec<(&'static str, &'static str, u32)> {
             "ConsentReceiptAlreadyCommitted",
             ProofError::ConsentReceiptAlreadyCommitted as u32,
         ),
+        (
+            "ProofError",
+            "ConsentAlreadyWithdrawn",
+            ProofError::ConsentAlreadyWithdrawn as u32,
+        ),
+        (
+            "ProofError",
+            "ConsentWithdrawn",
+            ProofError::ConsentWithdrawn as u32,
+        ),
+        (
+            "ProofError",
+            "StaleConsentWithdrawalSequence",
+            ProofError::StaleConsentWithdrawalSequence as u32,
+        ),
+        (
+            "ProofError",
+            "InvalidConsentWithdrawalReason",
+            ProofError::InvalidConsentWithdrawalReason as u32,
+        ),
+        (
+            "ProofError",
+            "UnsupportedEventDomain",
+            ProofError::UnsupportedEventDomain as u32,
+        ),
     ]
 }
 

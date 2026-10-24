@@ -15,12 +15,12 @@
 use earnproof_shared::disclosure_consent_commitment;
 use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{Address, BytesN, Env, String, Symbol, TryFromVal, Val};
+use soroban_sdk::{Address, BytesN, Env, Symbol, TryFromVal, Val};
 
 use earnproof_shared::{
     compute_schema_policy_digest, compute_subject_nullifier_commitment,
-    compute_subject_pseudonym_commitment, SchemaLifecyclePolicy, SchemaPolicy,
-    SchemaPolicyDigestInput, SchemaRateLimit, UpgradeCompatibilityAttestation,
+    compute_subject_pseudonym_commitment, disclosure_consent_commitment, SchemaLifecyclePolicy,
+    SchemaPolicy, SchemaPolicyDigestInput, SchemaRateLimit, UpgradeCompatibilityAttestation,
     SCHEMA_POLICY_DIGEST_VERSION,
 };
 use issuer_registry::{IssuerRegistryContract, IssuerRegistryContractClient};
@@ -53,7 +53,7 @@ fn subject_nullifier_domain_versions_preserve_legacy_and_prevent_collisions() {
         &env,
         "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
     );
-    let purpose = String::from_str(&env, "credential-verification");
+    let purpose = soroban_sdk::String::from_str(&env, "credential-verification");
     let subject = BytesN::from_array(&env, &[0x11; 32]);
     let legacy = compute_subject_pseudonym_commitment(&env, &issuer, &purpose, &subject).unwrap();
     assert_eq!(
@@ -281,6 +281,7 @@ fn proof_registry_accepts_backend_hashes_and_stores_them_queryable_by_the_same_k
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&1);
+    config.approve_proof_type(&BytesN::from_array(&env, &[1; 32]));
     config.approve_proof_type(&soroban_sdk::BytesN::from_array(&env, &[1u8; 32]));
 
     let issuers_id = env.register(IssuerRegistryContract, ());
@@ -301,8 +302,6 @@ fn proof_registry_accepts_backend_hashes_and_stores_them_queryable_by_the_same_k
 
     let proof_id_hash = bytes_from_hex(&env, vector_hex("proof-1"));
     let commitment_hash = bytes_from_hex(&env, vector_hex("commitment-1"));
-
-    let proof_type = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
     proofs.register_proof(
         &proof_id_hash,
         &commitment_hash,
@@ -310,7 +309,7 @@ fn proof_registry_accepts_backend_hashes_and_stores_them_queryable_by_the_same_k
         &1,
         &(env.ledger().timestamp() + 1_000),
         &None,
-        &proof_type,
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
 
     let registered = events(&env)
@@ -445,6 +444,7 @@ fn consent_receipt_commitment_returned_by_contract_matches_shared_helper() {
     let config = ProtocolConfigContractClient::new(&env, &config_id);
     config.initialize(&admin);
     config.approve_schema_version(&1);
+    config.approve_proof_type(&BytesN::from_array(&env, &[1; 32]));
     let issuer_registry_id = env.register(IssuerRegistryContract, ());
     let issuers = IssuerRegistryContractClient::new(&env, &issuer_registry_id);
     issuers.initialize(&admin);
@@ -467,7 +467,7 @@ fn consent_receipt_commitment_returned_by_contract_matches_shared_helper() {
         &1,
         &(env.ledger().timestamp() + 1_000),
         &None,
-        &pt,
+        &soroban_sdk::BytesN::from_array(&env, &[1u8; 32]),
     );
 
     let actual = proofs.commit_disclosure_consent(&proof_id, &policy_hash, &3, &receipt_hash);

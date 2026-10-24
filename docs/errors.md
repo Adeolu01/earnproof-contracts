@@ -144,6 +144,11 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 | 325 | `DisputeFilingWindowClosed` | `ProofError` | proof-registry | returned | never | 400 |
 | 326 | `UnsupportedNullifierDomain` | `ProofError` | proof-registry | returned | after-operator-action | 400 |
 | 327 | `ConsentReceiptAlreadyCommitted` | `ProofError` | proof-registry | returned | never | 409 |
+| 328 | `ConsentAlreadyWithdrawn` | `ProofError` | proof-registry | returned | never | 409 |
+| 329 | `ConsentWithdrawn` | `ProofError` | proof-registry | returned | never | 409 |
+| 330 | `StaleConsentWithdrawalSequence` | `ProofError` | proof-registry | returned | after-caller-change | 409 |
+| 331 | `InvalidConsentWithdrawalReason` | `ProofError` | proof-registry | returned | never | 400 |
+| 332 | `UnsupportedEventDomain` | `ProofError` | proof-registry | returned | never | 400 |
 
 ## Details
 
@@ -857,9 +862,64 @@ A Soroban contract error is a type and a number. It carries no message, no paylo
 - Domain: proof-registry
 - Status: returned
 - Retry: never
-- Cause: The same consent receipt commitment was already recorded.
-- Remediation: Use a distinct receipt hash or receipt version.
+- Cause: The same disclosure-consent receipt commitment was already recorded for this proof, policy, receipt version, and receipt hash.
+- Remediation: Treat the receipt as already anchored. Query has_consent_receipt_commitment instead of replaying the commit.
 - Suggested HTTP status: 409
-- Client message: "Consent receipt already committed"
+- Client message: "Consent receipt is already committed"
+
+### 328 - `ConsentAlreadyWithdrawn`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: Consent for this proof and policy was already withdrawn; a withdrawal is final and recorded once.
+- Remediation: Treat consent as withdrawn. Query is_consent_withdrawn instead of resubmitting.
+- Suggested HTTP status: 409
+- Client message: "Consent is already withdrawn"
+
+### 329 - `ConsentWithdrawn`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: A disclosure-consent receipt cannot be committed because consent for this proof and policy was withdrawn.
+- Remediation: Do not anchor new receipts for this pair. A new proof or policy hash is required for fresh consent.
+- Suggested HTTP status: 409
+- Client message: "Consent has been withdrawn"
+
+### 330 - `StaleConsentWithdrawalSequence`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: after-caller-change
+- Cause: The expected withdrawal sequence does not match the next sequence, so the request was replayed or raced by another withdrawal.
+- Remediation: Re-read get_consent_withdrawal_count, then resubmit with the next sequence if the withdrawal is still needed.
+- Suggested HTTP status: 409
+- Client message: "Withdrawal request is out of date"
+
+### 331 - `InvalidConsentWithdrawalReason`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: The withdrawal reason code is outside the published version-1 range 1 to 4.
+- Remediation: Use a published reason code. Reason text is never accepted on chain.
+- Suggested HTTP status: 400
+- Client message: "Withdrawal reason is not valid"
+
+### 332 - `UnsupportedEventDomain`
+
+- Enum: `ProofError`
+- Domain: proof-registry
+- Status: returned
+- Retry: never
+- Cause: The contract does not report a sequence range for the requested event domain.
+- Remediation: Query the domain on the contract that emits it: config-change and pause acknowledgements on protocol-config, consent withdrawals on proof-registry.
+- Suggested HTTP status: 400
+- Client message: "Event domain is not supported"
 
 <!-- END GENERATED -->

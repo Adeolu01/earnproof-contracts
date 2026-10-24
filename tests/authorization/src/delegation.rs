@@ -58,9 +58,7 @@ fn register_proof_demands_exactly_the_named_issuer() {
     let commitment = hash(&d.env, 0xA2);
     let expires_at = d.env.ledger().timestamp() + 100_000;
 
-    let pt = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
-    let pred: Option<soroban_sdk::BytesN<32>> = None;
-    d.proofs.register_proof(
+    d.proofs.register_proof_typed(
         &proof_id,
         &commitment,
         &d.issuer,
@@ -225,7 +223,7 @@ fn registration_auth_is_not_forwardable_to_another_issuer() {
     );
     assert!(
         d.proofs
-            .try_register_proof(
+            .try_register_proof_typed(
                 &proof_id,
                 &commitment,
                 &d.issuer,
@@ -256,7 +254,7 @@ fn cross_contract_reads_leave_the_callees_untouched_on_rejection() {
     let pred: Option<soroban_sdk::BytesN<32>> = None;
     assert!(d
         .proofs
-        .try_register_proof(
+        .try_register_proof_typed(
             &proof_id,
             &commitment,
             &d.issuer,

@@ -240,17 +240,21 @@ impl Deployment<'_> {
     }
 
     pub fn suspend_issuer(&self, issuer_id: &BytesN<32>) {
-        let proposal = soroban_sdk::BytesN::from_array(&self.env, &[1u8; 32]);
-        let reason_commitment = soroban_sdk::BytesN::from_array(&self.env, &[2u8; 32]);
+        let proposal_id = BytesN::from_array(&self.env, &{
+            let mut a = [0xA5u8; 32];
+            a[1] = 2;
+            a
+        });
+        let reason_commitment = BytesN::from_array(&self.env, &[1u8; 32]);
         authorize(
             &self.env,
             &self.admin,
             &self.issuers_address,
             "suspend_issuer",
-            (&proposal, issuer_id, &reason_commitment).into_val(&self.env),
+            (&proposal_id, issuer_id, &reason_commitment).into_val(&self.env),
         );
         self.issuers
-            .suspend_issuer(&proposal, issuer_id, &reason_commitment);
+            .suspend_issuer(&proposal_id, issuer_id, &reason_commitment);
     }
 
     pub fn rotate_issuer_address(&self, issuer_id: &BytesN<32>, new_address: &Address) {
@@ -284,7 +288,7 @@ impl Deployment<'_> {
             &self.env,
             &self.issuer,
             &self.proofs_address,
-            "register_proof",
+            "register_proof_typed",
             (
                 &proof_id,
                 &commitment,
@@ -296,7 +300,7 @@ impl Deployment<'_> {
             )
                 .into_val(&self.env),
         );
-        self.proofs.register_proof(
+        self.proofs.register_proof_typed(
             &proof_id,
             &commitment,
             &self.issuer,

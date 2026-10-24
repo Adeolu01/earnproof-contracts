@@ -287,6 +287,45 @@ fn matrix() -> std::vec::Vec<Case> {
                 }
             },
         },
+        Case {
+            name: "protocol-config::set_history_retention",
+            uninitialized: false,
+            setup: no_setup,
+            call: |d, identity| {
+                let kind = earnproof_shared::HistoryKind::ConfigChange;
+                let max_entries = 16_u32;
+                let revision = 0_u32;
+                let args: soroban_sdk::Vec<Val> = (&kind, &max_entries, &revision).into_val(&d.env);
+                let attempt = || {
+                    d.config
+                        .try_set_history_retention(&kind, &max_entries, &revision)
+                        .is_ok()
+                };
+                match identity {
+                    Identity::Missing => attempt(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.attacker(),
+                            &d.config_address,
+                            "set_history_retention",
+                            args.clone(),
+                        );
+                        attempt()
+                    }
+                    Identity::Authorized => {
+                        authorize(
+                            &d.env,
+                            &d.admin,
+                            &d.config_address,
+                            "set_history_retention",
+                            args,
+                        );
+                        attempt()
+                    }
+                }
+            },
+        },
         // -----------------------------------------------------------------
         // issuer-registry
         // -----------------------------------------------------------------
@@ -391,20 +430,12 @@ fn matrix() -> std::vec::Vec<Case> {
             setup: no_setup,
             call: |d, identity| {
                 let reason = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
-                let args: soroban_sdk::Vec<Val> = (
-                    &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
-                    &d.issuer_id,
-                    &reason,
-                )
-                    .into_val(&d.env);
+                let pid = soroban_sdk::BytesN::from_array(&d.env, &[0xA6u8; 32]);
+                let args: soroban_sdk::Vec<Val> = (&pid, &d.issuer_id, &reason).into_val(&d.env);
                 match identity {
                     Identity::Missing => d
                         .issuers
-                        .try_suspend_issuer(
-                            &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
-                            &d.issuer_id,
-                            &reason,
-                        )
+                        .try_suspend_issuer(&pid, &d.issuer_id, &reason)
                         .is_ok(),
                     Identity::Wrong => {
                         authorize(
@@ -415,21 +446,13 @@ fn matrix() -> std::vec::Vec<Case> {
                             args.clone(),
                         );
                         d.issuers
-                            .try_suspend_issuer(
-                                &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
-                                &d.issuer_id,
-                                &reason,
-                            )
+                            .try_suspend_issuer(&pid, &d.issuer_id, &reason)
                             .is_ok()
                     }
                     Identity::Authorized => {
                         authorize(&d.env, &d.admin, &d.issuers_address, "suspend_issuer", args);
                         d.issuers
-                            .try_suspend_issuer(
-                                &soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]),
-                                &d.issuer_id,
-                                &reason,
-                            )
+                            .try_suspend_issuer(&pid, &d.issuer_id, &reason)
                             .is_ok()
                     }
                 }
@@ -444,12 +467,12 @@ fn matrix() -> std::vec::Vec<Case> {
             call: |d, identity| {
                 let proposal = soroban_sdk::BytesN::from_array(&d.env, &[2u8; 32]);
                 let reason = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
-                let args: soroban_sdk::Vec<Val> =
-                    (&proposal, &d.issuer_id, &reason).into_val(&d.env);
+                let pid = soroban_sdk::BytesN::from_array(&d.env, &[0xA6u8; 32]);
+                let args: soroban_sdk::Vec<Val> = (&pid, &d.issuer_id, &reason).into_val(&d.env);
                 match identity {
                     Identity::Missing => d
                         .issuers
-                        .try_reactivate_issuer(&proposal, &d.issuer_id, &reason)
+                        .try_reactivate_issuer(&pid, &d.issuer_id, &reason)
                         .is_ok(),
                     Identity::Wrong => {
                         authorize(
@@ -460,7 +483,7 @@ fn matrix() -> std::vec::Vec<Case> {
                             args.clone(),
                         );
                         d.issuers
-                            .try_reactivate_issuer(&proposal, &d.issuer_id, &reason)
+                            .try_reactivate_issuer(&pid, &d.issuer_id, &reason)
                             .is_ok()
                     }
                     Identity::Authorized => {
@@ -472,7 +495,7 @@ fn matrix() -> std::vec::Vec<Case> {
                             args,
                         );
                         d.issuers
-                            .try_reactivate_issuer(&proposal, &d.issuer_id, &reason)
+                            .try_reactivate_issuer(&pid, &d.issuer_id, &reason)
                             .is_ok()
                     }
                 }
@@ -485,12 +508,12 @@ fn matrix() -> std::vec::Vec<Case> {
             call: |d, identity| {
                 let proposal = soroban_sdk::BytesN::from_array(&d.env, &[3u8; 32]);
                 let reason = soroban_sdk::BytesN::from_array(&d.env, &[1u8; 32]);
-                let args: soroban_sdk::Vec<Val> =
-                    (&proposal, &d.issuer_id, &reason).into_val(&d.env);
+                let pid = soroban_sdk::BytesN::from_array(&d.env, &[0xA6u8; 32]);
+                let args: soroban_sdk::Vec<Val> = (&pid, &d.issuer_id, &reason).into_val(&d.env);
                 match identity {
                     Identity::Missing => d
                         .issuers
-                        .try_revoke_issuer(&proposal, &d.issuer_id, &reason)
+                        .try_revoke_issuer(&pid, &d.issuer_id, &reason)
                         .is_ok(),
                     Identity::Wrong => {
                         authorize(
@@ -501,13 +524,13 @@ fn matrix() -> std::vec::Vec<Case> {
                             args.clone(),
                         );
                         d.issuers
-                            .try_revoke_issuer(&proposal, &d.issuer_id, &reason)
+                            .try_revoke_issuer(&pid, &d.issuer_id, &reason)
                             .is_ok()
                     }
                     Identity::Authorized => {
                         authorize(&d.env, &d.admin, &d.issuers_address, "revoke_issuer", args);
                         d.issuers
-                            .try_revoke_issuer(&proposal, &d.issuer_id, &reason)
+                            .try_revoke_issuer(&pid, &d.issuer_id, &reason)
                             .is_ok()
                     }
                 }
@@ -611,7 +634,7 @@ fn matrix() -> std::vec::Vec<Case> {
                 match identity {
                     Identity::Missing => d
                         .proofs
-                        .try_register_proof(
+                        .try_register_proof_typed(
                             &proof_id,
                             &commitment,
                             &d.issuer,
@@ -629,11 +652,11 @@ fn matrix() -> std::vec::Vec<Case> {
                             &d.env,
                             &d.second_issuer,
                             &d.proofs_address,
-                            "register_proof",
+                            "register_proof_typed",
                             args.clone(),
                         );
                         d.proofs
-                            .try_register_proof(
+                            .try_register_proof_typed(
                                 &proof_id,
                                 &commitment,
                                 &d.issuer,
@@ -645,9 +668,15 @@ fn matrix() -> std::vec::Vec<Case> {
                             .is_ok()
                     }
                     Identity::Authorized => {
-                        authorize(&d.env, &d.issuer, &d.proofs_address, "register_proof", args);
+                        authorize(
+                            &d.env,
+                            &d.issuer,
+                            &d.proofs_address,
+                            "register_proof_typed",
+                            args,
+                        );
                         d.proofs
-                            .try_register_proof(
+                            .try_register_proof_typed(
                                 &proof_id,
                                 &commitment,
                                 &d.issuer,
@@ -748,6 +777,54 @@ fn matrix() -> std::vec::Vec<Case> {
             },
         },
         Case {
+            name: "proof-registry::withdraw_disclosure_consent",
+            uninitialized: false,
+            setup: register_fixture_proof,
+            call: |d, identity| {
+                let proof_id = hash(&d.env, FIXTURE_PROOF);
+                let policy_hash = hash(&d.env, 0x14);
+                let sequence = 1_u64;
+                let reason = 1_u32;
+                let salt = hash(&d.env, 0x15);
+                let args: soroban_sdk::Vec<Val> =
+                    (&proof_id, &policy_hash, &sequence, &reason, &salt).into_val(&d.env);
+                let attempt = || {
+                    d.proofs
+                        .try_withdraw_disclosure_consent(
+                            &proof_id,
+                            &policy_hash,
+                            &sequence,
+                            &reason,
+                            &salt,
+                        )
+                        .is_ok()
+                };
+                match identity {
+                    Identity::Missing => attempt(),
+                    Identity::Wrong => {
+                        authorize(
+                            &d.env,
+                            &d.second_issuer,
+                            &d.proofs_address,
+                            "withdraw_disclosure_consent",
+                            args.clone(),
+                        );
+                        attempt()
+                    }
+                    Identity::Authorized => {
+                        authorize(
+                            &d.env,
+                            &d.issuer,
+                            &d.proofs_address,
+                            "withdraw_disclosure_consent",
+                            args,
+                        );
+                        attempt()
+                    }
+                }
+            },
+        },
+        Case {
             name: "proof-registry::admin_revoke_proof",
             uninitialized: false,
             setup: register_fixture_proof,
@@ -784,11 +861,10 @@ fn matrix() -> std::vec::Vec<Case> {
         },
     ]
 }
-
 /// Guards against a mutating entry point being added without a documented
 /// authorization expectation. Bump only together with
 /// `docs/authorization-matrix.md`.
-const DOCUMENTED_MUTATIONS: usize = 18;
+const DOCUMENTED_MUTATIONS: usize = 20;
 
 #[test]
 fn matrix_covers_every_mutating_public_function() {
@@ -898,4 +974,27 @@ fn read_only_entry_points_require_no_authorization() {
         .proofs
         .try_has_consent_receipt_commitment(&hash(&deployment.env, 0x99))
         .is_ok());
+}
+
+#[test]
+fn new_history_and_consent_rows_accept_only_their_documented_authority() {
+    for case in matrix().into_iter().filter(|case| {
+        case.name == "protocol-config::set_history_retention"
+            || case.name == "proof-registry::withdraw_disclosure_consent"
+    }) {
+        for (identity, expected) in [
+            (Identity::Missing, false),
+            (Identity::Wrong, false),
+            (Identity::Authorized, true),
+        ] {
+            let deployment = deployment_for(&case);
+            (case.setup)(&deployment);
+            assert_eq!(
+                (case.call)(&deployment, identity),
+                expected,
+                "{}",
+                case.name
+            );
+        }
+    }
 }
