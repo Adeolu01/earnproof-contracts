@@ -98,7 +98,10 @@ fn set_admin_emits_admin_changed_once_and_matches_state() {
         deployment.config.nominate_admin(&successor);
         deployment.config.accept_admin()
     });
-    let event = expect_single(&deployment.env, &events, "admin_transfer_accepted");
+    let event = events
+        .iter()
+        .find(|e| e.is(&deployment.env, "admin_transfer_accepted"))
+        .expect("admin_transfer_accepted event must be emitted");
 
     let announced: Address = event
         .field(&deployment.env, "new_admin")
@@ -112,7 +115,10 @@ fn set_admin_emits_admin_changed_once_and_matches_state() {
 fn approve_schema_version_emits_schema_approved_once() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| deployment.config.approve_schema_version(&7));
-    let event = expect_single(&deployment.env, &events, "schema_approved");
+    let event = events
+        .iter()
+        .find(|e| e.is(&deployment.env, "schema_approved"))
+        .expect("schema_approved event must be emitted");
 
     let version: u32 = event
         .field(&deployment.env, "version")

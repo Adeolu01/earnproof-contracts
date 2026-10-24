@@ -102,6 +102,13 @@ pub struct AdminTransferAccepted {
 }
 
 #[contractevent]
+pub struct GovernanceReceiptCommitted {
+    pub proposal_id: BytesN<32>,
+    pub receipt_hash: BytesN<32>,
+    pub resulting_config_version: u32,
+}
+
+#[contractevent]
 pub struct AdminTransferCancelled {
     pub pending_admin: Address,
     pub cancelled_by: Address,
@@ -430,6 +437,25 @@ impl ProtocolConfigContract {
     /// Machine-readable interface version this contract exposes to consumers.
     pub fn interface_version(_env: Env) -> InterfaceVersion {
         PROTOCOL_CONFIG_INTERFACE_VERSION
+    }
+
+    /// Machine-readable event schema registry version.
+    pub fn event_schema_version(_env: Env) -> u32 {
+        PROTOCOL_CONFIG_EVENT_SCHEMA_VERSION
+    }
+
+    /// Supported event schema bounds (min, max, current).
+    pub fn event_schema_bounds(_env: Env) -> EventSchemaBounds {
+        EventSchemaBounds {
+            min_version: 1,
+            max_version: PROTOCOL_CONFIG_EVENT_SCHEMA_VERSION,
+            current_version: PROTOCOL_CONFIG_EVENT_SCHEMA_VERSION,
+        }
+    }
+
+    /// Query whether a specific event schema version is supported.
+    pub fn is_event_schema_supported(_env: Env, version: u32) -> bool {
+        version >= 1 && version <= PROTOCOL_CONFIG_EVENT_SCHEMA_VERSION
     }
 
     pub fn nominate_admin(env: Env, new_admin: Address) -> Result<(), ContractError> {
@@ -1989,11 +2015,9 @@ impl ProtocolConfigContract {
             CriticalAction::SchemaApproval(version) => {
                 Self::apply_schema_activation(
                     env.clone(),
-                    version,
-                    env.ledger().timestamp(),
                     ConfigChangeCategory::SchemaApproval,
-                    commitment,
-                )?;
+                    commitment.clone(),
+                );
             }
             CriticalAction::SchemaActivation(version, activates_at) => {
                 Self::apply_schema_activation(
@@ -2001,7 +2025,7 @@ impl ProtocolConfigContract {
                     version,
                     activates_at,
                     ConfigChangeCategory::SchemaActivation,
-                    commitment,
+                    commitment.clone(),
                 )?;
             }
             CriticalAction::SchemaDeprecation(version) => {
@@ -2014,7 +2038,7 @@ impl ProtocolConfigContract {
                 Self::record_critical_action_change(
                     env.clone(),
                     ConfigChangeCategory::SchemaDeprecation,
-                    commitment,
+                    commitment.clone(),
                 );
                 SchemaDeprecated { version }.publish(&env);
             }
@@ -2028,7 +2052,7 @@ impl ProtocolConfigContract {
                     deprecated_version,
                     replacement_version,
                     compatibility,
-                    commitment,
+                    commitment.clone(),
                 )?;
             }
             CriticalAction::SchemaPayloadLimit(version, max_size) => {
@@ -2040,7 +2064,7 @@ impl ProtocolConfigContract {
                 Self::record_critical_action_change(
                     env.clone(),
                     ConfigChangeCategory::SchemaPayloadLimit,
-                    commitment,
+                    commitment.clone(),
                 );
                 SchemaPayloadLimitSet { version, max_size }.publish(&env);
             }
@@ -2049,12 +2073,16 @@ impl ProtocolConfigContract {
                 Self::store_critical_action_policy_with_commitment(
                     env.clone(),
                     policy,
-                    commitment,
+                    commitment.clone(),
                 )?;
             }
             CriticalAction::EmergencyPolicyUpdate(policy) => {
                 Self::validate_emergency_policy(&env, &policy)?;
-                Self::store_emergency_policy_with_commitment(env.clone(), policy, commitment)?;
+                Self::store_emergency_policy_with_commitment(
+                    env.clone(),
+                    policy,
+                    commitment.clone(),
+                )?;
             }
             CriticalAction::IssuerRegistryReplacement(_)
             | CriticalAction::ProtocolConfigReplacement(_) => {
@@ -2073,8 +2101,68 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .remove(&DataKey::CriticalApproverSnapshot(proposal_id.clone()));
+        let resulting_config_version = Self::get_config_version(env.clone());
+        let execution_ledger = env.ledger().sequence();
+        let execution_timestamp = env.ledger().timestamp();
+        let approval_count = Self::eligible_approval_count(&env, &proposal_id, &proposal);
+        let receipt_hash = compute_governance_receipt_hash(
+            &env,
+            GOVERNANCE_RECEIPT_VERSION,
+            &proposal_id,
+            &commitment,
+            approval_count,
+            resulting_config_version,
+            execution_ledger,
+            execution_timestamp,
+        );
+        let receipt = GovernanceExecutionReceipt {
+            receipt_version: GOVERNANCE_RECEIPT_VERSION,
+            proposal_id: proposal_id.clone(),
+            action_commitment: commitment,
+            approval_count,
+            resulting_config_version,
+            execution_ledger,
+            execution_timestamp,
+            receipt_hash: receipt_hash.clone(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::GovernanceReceipt(proposal_id.clone()), &receipt);
+        env.storage()
+            .instance()
+            .set(&DataKey::LatestGovernanceReceipt, &receipt);
+        GovernanceReceiptCommitted {
+            proposal_id: proposal_id.clone(),
+            receipt_hash,
+            resulting_config_version,
+        }
+        .publish(&env);
         CriticalActionExecuted { proposal_id }.publish(&env);
         Ok(())
+    }
+
+    /// Look up committed governance execution receipt by proposal id.
+    pub fn get_governance_receipt(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Option<GovernanceExecutionReceipt> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GovernanceReceipt(proposal_id))
+    }
+
+    /// Look up latest committed governance execution receipt.
+    pub fn get_latest_governance_receipt(env: Env) -> Option<GovernanceExecutionReceipt> {
+        env.storage()
+            .instance()
+            .get(&DataKey::LatestGovernanceReceipt)
+    }
+
+    /// Look up committed upgrade precondition snapshot digest.
+    pub fn get_upgrade_precondition(env: Env, wasm_hash: BytesN<32>) -> Option<BytesN<32>> {
+        env.storage()
+            .instance()
+            .get(&DataKey::UpgradePrecondition(wasm_hash))
     }
 
     /// Returns the active payload-size bound for `version`: the governed
@@ -2403,6 +2491,22 @@ impl ProtocolConfigContract {
             panic!("new_version must be greater than current contract version");
         }
 
+        let dependencies = Vec::new(&env);
+        let is_paused = Self::is_scope_paused(env.clone(), PauseScope::Upgrades);
+        let migration_complete = true;
+        let precondition_digest = compute_precondition_digest(
+            &env,
+            &admin,
+            current,
+            &dependencies,
+            is_paused,
+            migration_complete,
+        );
+        env.storage().instance().set(
+            &DataKey::UpgradePrecondition(wasm_hash.clone()),
+            &precondition_digest,
+        );
+
         env.storage()
             .instance()
             .set(&DataKey::AllowedWasm(wasm_hash.clone()), &new_version);
@@ -2474,6 +2578,30 @@ impl ProtocolConfigContract {
         if new_version <= old_version {
             panic!("upgrade would not advance contract version");
         }
+
+        let expected_precondition: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradePrecondition(wasm_hash.clone()))
+            .unwrap_or_else(|| panic!("missing upgrade precondition snapshot"));
+
+        let dependencies = Vec::new(&env);
+        let is_paused = Self::is_scope_paused(env.clone(), PauseScope::Upgrades);
+        let migration_complete = true;
+        let current_precondition = compute_precondition_digest(
+            &env,
+            &admin,
+            old_version,
+            &dependencies,
+            is_paused,
+            migration_complete,
+        );
+        if expected_precondition != current_precondition {
+            panic!("upgrade precondition mismatch: material state changed since approval");
+        }
+        env.storage()
+            .instance()
+            .remove(&DataKey::UpgradePrecondition(wasm_hash.clone()));
 
         // Consume the allowlist entry before applying so re-entrancy cannot
         // replay the same hash.
@@ -2989,6 +3117,7 @@ impl ProtocolConfigContract {
         env.storage()
             .persistent()
             .set(&DataKey::SchemaVersion(version), &true);
+        Self::record_schema_approval(&env, version);
         Self::extend_schema_ttl(env.clone(), version);
         Self::store_schema_activation_notice(
             env.clone(),

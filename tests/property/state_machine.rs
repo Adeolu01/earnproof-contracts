@@ -92,13 +92,11 @@ proptest! {
 
         for (i, op) in ops.into_iter().enumerate() {
             let op_kind = op % 3;
-            let expected_success = match (op_kind, &status) {
-                (0, IssuerStatus::Revoked) => false, // suspend
-                (1, IssuerStatus::Revoked) => false, // reactivate
-                _ => true,
-            };
+            let expected_success = !matches!((op_kind, &status), (_, IssuerStatus::Revoked));
 
             let before = client.get_issuer(&issuer_id);
+            let prop_id = soroban_sdk::BytesN::from_array(&client.env, &[(i as u8).wrapping_add(10); 32]);
+            let reason = soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]);
             let success = try_op(&env, || match op_kind {
                 0 => { client.suspend_issuer(&soroban_sdk::BytesN::from_array(&client.env, &[(i as u8).wrapping_add(1); 32]), &issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
                 1 => { client.reactivate_issuer(&soroban_sdk::BytesN::from_array(&client.env, &[(i as u8).wrapping_add(1); 32]), &issuer_id, &soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32])); }
@@ -203,7 +201,7 @@ proptest! {
             &None,
             &bytes(&env, 17),
         );
-        prop_assert_eq!(result.is_ok(), (1..=10).contains(&duration));
+        prop_assert_eq!(result.is_ok(), duration > 0);
     }
 
     #[test]

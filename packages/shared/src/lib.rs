@@ -507,6 +507,98 @@ pub const ISSUER_REGISTRY_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion
 /// The interface version implemented by `protocol-config`.
 pub const PROTOCOL_CONFIG_INTERFACE_VERSION: InterfaceVersion = InterfaceVersion::new(1, 3, 0);
 
+/// Machine-readable bounds on supported event schema registry versions.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct EventSchemaBounds {
+    pub min_version: u32,
+    pub max_version: u32,
+    pub current_version: u32,
+}
+
+pub const PROTOCOL_CONFIG_EVENT_SCHEMA_VERSION: u32 = 1;
+pub const ISSUER_REGISTRY_EVENT_SCHEMA_VERSION: u32 = 1;
+pub const PROOF_REGISTRY_EVENT_SCHEMA_VERSION: u32 = 1;
+
+/// Canonical execution precondition snapshot version.
+pub const PRECONDITION_SNAPSHOT_VERSION: u32 = 1;
+
+/// Snapshot of critical execution preconditions recorded at upgrade approval
+/// and revalidated atomically before execution.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradePreconditionSnapshot {
+    pub admin: Address,
+    pub current_version: u32,
+    pub dependencies: Vec<Address>,
+    pub is_paused: bool,
+    pub migration_complete: bool,
+}
+
+pub fn compute_precondition_digest(
+    env: &Env,
+    admin: &Address,
+    current_version: u32,
+    dependencies: &Vec<Address>,
+    is_paused: bool,
+    migration_complete: bool,
+) -> BytesN<32> {
+    let payload = (
+        PRECONDITION_SNAPSHOT_VERSION,
+        Symbol::new(env, "upgrade_precondition"),
+        admin.clone(),
+        current_version,
+        dependencies.clone(),
+        is_paused,
+        migration_complete,
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
+}
+
+/// Canonical governance execution receipt version.
+pub const GOVERNANCE_RECEIPT_VERSION: u32 = 1;
+
+/// Stable, canonical receipt binding proposal execution state, approvals,
+/// action outcome, and resulting configuration version without private data.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceExecutionReceipt {
+    pub receipt_version: u32,
+    pub proposal_id: BytesN<32>,
+    pub action_commitment: BytesN<32>,
+    pub approval_count: u32,
+    pub resulting_config_version: u32,
+    pub execution_ledger: u32,
+    pub execution_timestamp: u64,
+    pub receipt_hash: BytesN<32>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compute_governance_receipt_hash(
+    env: &Env,
+    receipt_version: u32,
+    proposal_id: &BytesN<32>,
+    action_commitment: &BytesN<32>,
+    approval_count: u32,
+    resulting_config_version: u32,
+    execution_ledger: u32,
+    execution_timestamp: u64,
+) -> BytesN<32> {
+    let payload = (
+        receipt_version,
+        Symbol::new(env, "gov_exec_receipt"),
+        proposal_id.clone(),
+        action_commitment.clone(),
+        approval_count,
+        resulting_config_version,
+        execution_ledger,
+        execution_timestamp,
+    )
+        .to_xdr(env);
+    env.crypto().sha256(&payload).to_bytes()
+}
+
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AdminTransferState {
@@ -1663,6 +1755,8 @@ pub struct UpgradeApproval {
     pub expires_at: u32,
     /// Address that created this approval
     pub approved_by: Address,
+    /// Committed execution precondition digest
+    pub precondition_digest: BytesN<32>,
 }
 
 /// Upper bound on the number of identifiers a single bounded batch issuer

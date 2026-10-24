@@ -1071,6 +1071,14 @@ impl IssuerRegistryContract {
                 .get::<_, SigningKeyCommitment>(&DataKey::ActiveSigningKey(issuer_id.clone()))
                 .map(|active| active.key_hash == key_hash && active.algorithm == algorithm)
                 .unwrap_or(false)
+            || env
+                .storage()
+                .persistent()
+                .has(&DataKey::CompromisedSigningKey(
+                    issuer_id.clone(),
+                    key_hash.clone(),
+                    algorithm,
+                ))
             || Self::stored_signing_key_state(
                 env.clone(),
                 issuer_id.clone(),
@@ -1480,7 +1488,7 @@ impl IssuerRegistryContract {
         Ok(record)
     }
 
-    pub fn get_compromised_signing_key(
+    pub fn get_issuer_signing_key_state(
         env: Env,
         issuer_id: BytesN<32>,
         key_hash: BytesN<32>,
@@ -2101,6 +2109,25 @@ impl IssuerRegistryContract {
         ISSUER_REGISTRY_INTERFACE_VERSION
     }
 
+    /// Machine-readable event schema registry version.
+    pub fn event_schema_version(_env: Env) -> u32 {
+        ISSUER_REGISTRY_EVENT_SCHEMA_VERSION
+    }
+
+    /// Supported event schema bounds (min, max, current).
+    pub fn event_schema_bounds(_env: Env) -> EventSchemaBounds {
+        EventSchemaBounds {
+            min_version: 1,
+            max_version: ISSUER_REGISTRY_EVENT_SCHEMA_VERSION,
+            current_version: ISSUER_REGISTRY_EVENT_SCHEMA_VERSION,
+        }
+    }
+
+    /// Query whether a specific event schema version is supported.
+    pub fn is_event_schema_supported(_env: Env, version: u32) -> bool {
+        version >= 1 && version <= ISSUER_REGISTRY_EVENT_SCHEMA_VERSION
+    }
+
     /// Current registry epoch. Advances by one on every externally visible
     /// issuer mutation. A stable value means nothing has changed; consumers use
     /// it to skip refreshing cached issuer data. Starts at 0.
@@ -2377,6 +2404,20 @@ impl IssuerRegistryContract {
             return Err(ContractError::InvalidTimingConfig);
         }
 
+        let dependencies = Vec::new(&env);
+        let is_paused = Self::is_decommissioned(env.clone());
+        let migration_complete = Self::get_migration_status(env.clone())
+            .map(|s| s.complete)
+            .unwrap_or(true);
+        let precondition_digest = compute_precondition_digest(
+            &env,
+            &admin,
+            current,
+            &dependencies,
+            is_paused,
+            migration_complete,
+        );
+
         // Store approval — ALWAYS creates fresh timing metadata
         // Never reuses stale fields from a previous approval
         let approval = UpgradeApproval {
@@ -2385,6 +2426,7 @@ impl IssuerRegistryContract {
             earliest_execution,
             expires_at,
             approved_by: admin.clone(),
+            precondition_digest,
         };
 
         env.storage()
@@ -2502,6 +2544,23 @@ impl IssuerRegistryContract {
             return Err(ContractError::WasmHashMismatch);
         }
 
+        let dependencies = Vec::new(&env);
+        let is_paused = Self::is_decommissioned(env.clone());
+        let migration_complete = Self::get_migration_status(env.clone())
+            .map(|s| s.complete)
+            .unwrap_or(true);
+        let current_precondition = compute_precondition_digest(
+            &env,
+            &admin,
+            old_version,
+            &dependencies,
+            is_paused,
+            migration_complete,
+        );
+        if approval.precondition_digest != current_precondition {
+            return Err(ContractError::InvalidState);
+        }
+
         // Verify version is still valid
         if new_version <= old_version {
             return Err(ContractError::InvalidInput);
@@ -2583,6 +2642,14 @@ impl IssuerRegistryContract {
 
     pub fn get_latest_upgrade_receipt(env: Env) -> Option<UpgradeReceipt> {
         env.storage().instance().get(&DataKey::LatestUpgradeReceipt)
+    }
+
+    /// Look up committed upgrade precondition snapshot digest.
+    pub fn get_upgrade_precondition(env: Env) -> Option<BytesN<32>> {
+        env.storage()
+            .instance()
+            .get::<_, UpgradeApproval>(&DataKey::UpgradeApproval)
+            .map(|a| a.precondition_digest)
     }
 
     // ── private helpers ───────────────────────────────────────────────────────
@@ -3309,6 +3376,7 @@ mod test {
             &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
         client.suspend_issuer(
+            &soroban_sdk::BytesN::from_array(&env, &[0x81u8; 32]),
             &suspended,
             &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
@@ -3319,6 +3387,7 @@ mod test {
             &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
         client.revoke_issuer(
+            &soroban_sdk::BytesN::from_array(&env, &[0x82u8; 32]),
             &revoked,
             &soroban_sdk::BytesN::from_array(&env, &[0x99u8; 32]),
         );
@@ -3493,7 +3562,7 @@ mod test {
         env.mock_all_auths();
         client.initialize(&admin);
         let hash = BytesN::from_array(&env, &[0xde; 32]);
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&bytes(&env, 0xa1), &hash, &2);
         env.ledger().set_sequence_number(
             env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS,
         );
@@ -3507,7 +3576,7 @@ mod test {
         let (env, client, _admin) = setup();
         let hash = bytes(&env, 0x42);
 
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&bytes(&env, 0xa2), &hash, &2);
         env.ledger().set_sequence_number(
             env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS,
         );
@@ -3522,7 +3591,7 @@ mod test {
         let (env, client, _admin) = setup();
         let hash = bytes(&env, 0x42);
 
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&bytes(&env, 0xa3), &hash, &2);
         env.ledger().set_sequence_number(
             env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS,
         );
@@ -3547,7 +3616,7 @@ mod test {
         assert!(client.is_active_issuer(&issuer_id));
 
         let hash = bytes(&env, 0x77);
-        client.approve_upgrade(&hash, &2);
+        client.approve_upgrade(&bytes(&env, 0xa4), &hash, &2);
         env.ledger().set_sequence_number(
             env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS,
         );
@@ -3564,7 +3633,7 @@ mod test {
         let hash_v2 = bytes(&env, 0x01);
         let old_hash = bytes(&env, 0x02);
 
-        client.approve_upgrade(&hash_v2, &2);
+        client.approve_upgrade(&bytes(&env, 0xa5), &hash_v2, &2);
         env.ledger().set_sequence_number(
             env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS,
         );
@@ -3958,7 +4027,7 @@ mod test {
         let (env, client, _admin) = setup();
 
         // Valid: immediate next version
-        client.approve_upgrade(&bytes(&env, 1), &2);
+        client.approve_upgrade(&bytes(&env, 0xb1), &bytes(&env, 1), &2);
         env.ledger().set_sequence_number(
             env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS,
         );
@@ -3966,7 +4035,7 @@ mod test {
         assert_eq!(client.get_contract_version(), 2);
 
         // Valid: large version number
-        client.approve_upgrade(&bytes(&env, 2), &u32::MAX);
+        client.approve_upgrade(&bytes(&env, 0xb2), &bytes(&env, 2), &u32::MAX);
         env.ledger().set_sequence_number(
             env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS,
         );
@@ -4271,7 +4340,7 @@ mod test {
         );
 
         let wasm_hash = bytes(&env, 0xd1);
-        client.approve_upgrade(&wasm_hash, &2);
+        client.approve_upgrade(&bytes(&env, 0xb3), &wasm_hash, &2);
         env.ledger().set_sequence_number(
             env.ledger().sequence() + earnproof_shared::UPGRADE_TIMELOCK_LEDGERS,
         );
@@ -4491,7 +4560,7 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        client.revoke_issuer(&issuer_id, &bytes(&env, 98));
+        client.revoke_issuer(&bytes(&env, 0xc1), &issuer_id, &bytes(&env, 98));
         let result = client.try_set_issuer_metadata_commitment(
             &issuer_id,
             &bytes(&env, 0x11),
@@ -4557,7 +4626,7 @@ mod test {
             li.sequence_number = 900;
             li.timestamp = 9_000;
         });
-        client.suspend_issuer(&issuer_id, &bytes(&env, 98));
+        client.suspend_issuer(&bytes(&env, 0xc2), &issuer_id, &bytes(&env, 98));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status, IssuerStatus::Suspended);
         assert_eq!(record.status_effective_ledger, 900);
@@ -4575,27 +4644,26 @@ mod test {
             &bytes(&env, 2),
             &bytes(&env, 99),
         );
-        let reason = soroban_sdk::BytesN::from_array(&client.env, &[1u8; 32]);
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 10;
             li.timestamp = 100;
         });
-        client.suspend_issuer(&issuer_id, &bytes(&env, 98));
+        client.suspend_issuer(&bytes(&env, 0xc3), &issuer_id, &bytes(&env, 98));
         assert_eq!(client.get_issuer(&issuer_id).status_effective_ledger, 10);
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 20;
             li.timestamp = 200;
         });
-        client.reactivate_issuer(&issuer_id, &bytes(&env, 98));
+        client.reactivate_issuer(&bytes(&env, 0xc4), &issuer_id, &bytes(&env, 98));
         assert_eq!(client.get_issuer(&issuer_id).status_effective_ledger, 20);
 
         env.ledger().with_mut(|li| {
             li.sequence_number = 30;
             li.timestamp = 300;
         });
-        client.revoke_issuer(&issuer_id, &bytes(&env, 98));
+        client.revoke_issuer(&bytes(&env, 0xc5), &issuer_id, &bytes(&env, 98));
         let record = client.get_issuer(&issuer_id);
         assert_eq!(record.status, IssuerStatus::Revoked);
         assert_eq!(record.status_effective_ledger, 30);
@@ -4617,7 +4685,7 @@ mod test {
             li.sequence_number = 40;
             li.timestamp = 400;
         });
-        client.revoke_issuer(&issuer_id, &bytes(&env, 98));
+        client.revoke_issuer(&bytes(&env, 0xc6), &issuer_id, &bytes(&env, 98));
         let before = client.get_issuer(&issuer_id);
 
         // A revoked issuer cannot be reactivated; the rejected call must not
@@ -4626,7 +4694,7 @@ mod test {
             li.sequence_number = 50;
             li.timestamp = 500;
         });
-        let result = client.try_reactivate_issuer(&issuer_id, &bytes(&env, 98));
+        let result = client.try_reactivate_issuer(&bytes(&env, 0xc7), &issuer_id, &bytes(&env, 98));
         assert_eq!(result, Err(Ok(IssuerError::InvalidTransition)));
         let after = client.get_issuer(&issuer_id);
         assert_eq!(
@@ -4925,6 +4993,10 @@ mod upgrade_timelock_tests {
         BytesN::from_array(env, &[1u8; 32])
     }
 
+    fn bytes(env: &Env, value: u8) -> BytesN<32> {
+        BytesN::from_array(env, &[value; 32])
+    }
+
     fn setup() -> (Env, IssuerRegistryContractClient<'static>, Address) {
         let env = Env::default();
         env.mock_all_auths();
@@ -5179,9 +5251,11 @@ mod upgrade_timelock_tests {
     fn test_revoke_removes_approval() {
         let (env, client, _) = setup();
 
-        client.approve_upgrade(&make_wasm_hash(&env), &2);
+        let proposal_id = bytes(&env, 0xd1);
+        client.approve_upgrade(&proposal_id, &make_wasm_hash(&env), &2);
 
-        client.revoke_upgrade_approval();
+        let revoke_proposal_id = bytes(&env, 0xd2);
+        client.revoke_upgrade_approval(&revoke_proposal_id);
 
         env.as_contract(&client.address, || {
             let approval: Option<UpgradeApproval> =
@@ -5194,31 +5268,42 @@ mod upgrade_timelock_tests {
     fn test_revoke_before_timelock_succeeds() {
         let (env, client, _) = setup();
 
-        client.approve_upgrade(&make_wasm_hash(&env), &2);
+        let proposal_id = bytes(&env, 0xd3);
+        client.approve_upgrade(&proposal_id, &make_wasm_hash(&env), &2);
 
         // Revoke immediately (before timelock)
-        assert!(client.try_revoke_upgrade_approval().is_ok());
+        let revoke_proposal_id = bytes(&env, 0xd4);
+        assert!(client
+            .try_revoke_upgrade_approval(&revoke_proposal_id)
+            .is_ok());
     }
 
     #[test]
     fn test_revoke_after_expiry_succeeds_cleanup() {
         let (env, client, _) = setup();
 
-        client.approve_upgrade(&make_wasm_hash(&env), &2);
+        let proposal_id = bytes(&env, 0xd5);
+        client.approve_upgrade(&proposal_id, &make_wasm_hash(&env), &2);
 
         env.ledger()
             .set_sequence_number(env.ledger().sequence() + UPGRADE_APPROVAL_EXPIRY_LEDGERS + 1);
 
         // Revoke should succeed even on expired approval (cleanup)
-        assert!(client.try_revoke_upgrade_approval().is_ok());
+        let revoke_proposal_id = bytes(&env, 0xd6);
+        assert!(client
+            .try_revoke_upgrade_approval(&revoke_proposal_id)
+            .is_ok());
     }
 
     #[test]
     fn test_revoke_idempotent_when_no_approval() {
-        let (_env, client, _) = setup();
+        let (env, client, _) = setup();
 
         // Revoke with no approval — should not panic
-        assert!(client.try_revoke_upgrade_approval().is_ok());
+        let revoke_proposal_id = bytes(&env, 0xd7);
+        assert!(client
+            .try_revoke_upgrade_approval(&revoke_proposal_id)
+            .is_ok());
     }
 
     // ── SUITE 5: Overflow boundary ─────────────────────────────
@@ -5357,7 +5442,7 @@ mod upgrade_timelock_tests {
         );
         env.set_auths(&[]);
 
-        let result = client.try_revoke_upgrade_approval();
+        let result = client.try_revoke_upgrade_approval(&BytesN::from_array(&env, &[1u8; 32]));
 
         assert!(result.is_err(), "Non-admin must not revoke");
     }
