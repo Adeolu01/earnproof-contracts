@@ -179,7 +179,26 @@ pub struct GenesisRecord {
 /// regardless of the configured schema limit.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+// Added ProofRegistrationInput struct for batch registration
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofRegistrationInput {
+    pub proof_id_hash: BytesN<32>,
+    pub commitment_hash: BytesN<32>,
+    pub issuer_address: Address,
+    pub schema_version: u32,
+    pub expires_at: u64,
+    pub predecessor_id_hash: Option<BytesN<32>>,
+    pub proof_type: BytesN<32>,
+}
+
+// Original ProofPayloadRecord definition follows
 pub struct ProofPayloadRecord {
+    /// Length in bytes of the auxiliary payload supplied at registration.
+    pub payload_len: u32,
+    /// SHA-256 hash of the auxiliary payload.
+    pub payload_hash: BytesN<32>,
+}
     /// Length in bytes of the auxiliary payload supplied at registration.
     pub payload_len: u32,
     /// SHA-256 hash of the auxiliary payload.
