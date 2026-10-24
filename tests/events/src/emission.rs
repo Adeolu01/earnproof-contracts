@@ -197,7 +197,12 @@ fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
         deployment.issuers.suspend_issuer(
-            &crate::harness::hash(&deployment.env, 6),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &{
+                let mut a = [0xA5u8; 32];
+                a[1] = 8;
+                a[2] = 0;
+                a
+            }),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -215,13 +220,23 @@ fn suspend_issuer_emits_issuer_suspended_once_and_matches_storage() {
 fn reactivate_issuer_emits_issuer_reactivated_once_and_matches_storage() {
     let deployment = Deployment::new();
     deployment.issuers.suspend_issuer(
-        &crate::harness::hash(&deployment.env, 7),
+        &soroban_sdk::BytesN::from_array(&deployment.env, &{
+            let mut a = [0xA5u8; 32];
+            a[1] = 7;
+            a[2] = 0;
+            a
+        }),
         &deployment.issuer_id,
         &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
     );
     let events = deployment.capture(|| {
         deployment.issuers.reactivate_issuer(
-            &crate::harness::hash(&deployment.env, 8),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &{
+                let mut a = [0xA5u8; 32];
+                a[1] = 6;
+                a[2] = 0;
+                a
+            }),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -240,7 +255,12 @@ fn revoke_issuer_emits_issuer_revoked_once_and_matches_storage() {
     let deployment = Deployment::new();
     let events = deployment.capture(|| {
         deployment.issuers.revoke_issuer(
-            &crate::harness::hash(&deployment.env, 9),
+            &soroban_sdk::BytesN::from_array(&deployment.env, &{
+                let mut a = [0xA5u8; 32];
+                a[1] = 5;
+                a[2] = 0;
+                a
+            }),
             &deployment.issuer_id,
             &soroban_sdk::BytesN::from_array(&deployment.env, &[1u8; 32]),
         )
@@ -306,7 +326,7 @@ fn register_proof_emits_proof_registered_with_the_advanced_epoch() {
     let expires_at = deployment.env.ledger().timestamp() + 100_000;
 
     let events = deployment.capture(|| {
-        deployment.proofs.register_proof_with_type_identifier(
+        deployment.proofs.register_proof_typed(
             &proof_id,
             &hash(&deployment.env, 0xEE),
             &deployment.issuer,
@@ -375,7 +395,7 @@ fn a_rejected_registration_publishes_no_event_and_does_not_advance_the_epoch() {
     let expires_at = deployment.env.ledger().timestamp() + 100_000;
 
     let events = deployment.capture(|| {
-        let _ = deployment.proofs.try_register_proof_with_type_identifier(
+        let _ = deployment.proofs.try_register_proof_typed(
             &hash(&deployment.env, 0x31),
             &hash(&deployment.env, 0x32),
             &deployment.issuer,

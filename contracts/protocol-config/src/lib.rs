@@ -1,6 +1,27 @@
 #![no_std]
 
-use earnproof_shared::*;
+use earnproof_shared::{
+    event_checkpoint, oldest_retained_sequence, AdminTransferState, AdminTransferStatus,
+    ConfigChangeCategory, ConfigChangeSummary, ContractError, CriticalAction, CriticalActionPolicy,
+    CriticalActionProposal, DisputeFilingAnchor, DisputeFilingPolicy, EmergencyAction,
+    EmergencyActionProposal, EmergencyFastTrackPolicy, EventDomain, EventSequenceRange,
+    GenesisRecord, GovernanceActionDomain, GovernanceApprovalEligibility,
+    GovernanceApprovalSnapshot, GovernanceApproverSnapshot, GovernanceApproverVersion, HistoryKind,
+    HistoryRetention, HistoryRetentionState, InterfaceVersion, MigrationStatus,
+    PauseAcknowledgementRecord, PauseAcknowledgementRole, PauseScope, SchemaActivationNotice,
+    SchemaActivationState, SchemaCompatibility, SchemaLifecyclePolicy, SchemaPolicy,
+    SchemaPolicyDigest, SchemaRateLimit, SchemaReplacementPointer, ADMIN_TRANSFER_EXPIRY_LEDGERS,
+    CONFIG_HISTORY_CAPACITY, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS, DEFAULT_SCHEMA_PAYLOAD_LIMIT,
+    DEFAULT_SCHEMA_RATE_LIMIT, DEFAULT_SCHEMA_RATE_WINDOW_LEDGERS, DISPUTE_FILING_POLICY_VERSION,
+    EMERGENCY_FAST_TRACK_ENCODING_VERSION, EVENT_RANGE_VERSION, GOVERNANCE_ACTION_HASH_VERSION,
+    GOVERNANCE_APPROVAL_SNAPSHOT_VERSION, GOVERNANCE_APPROVER_SNAPSHOT_VERSION,
+    HISTORY_RETENTION_PRUNE_BATCH, HISTORY_RETENTION_VERSION, LEGACY_COMMITMENT_ALGORITHM,
+    LEGACY_PROOF_TYPE, MAX_CONFIG_HISTORY_PAGE, MAX_CRITICAL_ACTION_SIGNERS, MAX_MIGRATION_BATCH,
+    MAX_NULLIFIER_DOMAIN_VERSIONS, MAX_PAUSE_ACKNOWLEDGEMENT_HISTORY_PAGE,
+    MAX_SCHEMA_ACTIVATION_NOTICE_SECONDS, MAX_SCHEMA_LINEAGE_DEPTH, MAX_SCHEMA_PROOF_TYPES,
+    MAX_SCHEMA_VALIDITY_SECONDS, MIGRATION_STATUS_VERSION, PROTOCOL_CONFIG_INTERFACE_VERSION,
+    SHA256_COMMITMENT_ALGORITHM_V1, TTL_EXTEND_TO_LEDGERS, TTL_THRESHOLD_LEDGERS,
+};
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, xdr::ToXdr, Address, BytesN, Env, Symbol,
     Vec,
@@ -53,9 +74,6 @@ enum DataKey {
     CriticalActionSnapshot(BytesN<32>),
     CriticalApproverSnapshot(BytesN<32>),
     CriticalActionNonce,
-    EmergencyFastTrackPolicy,
-    EmergencyActionProposal(BytesN<32>),
-    EmergencyActionNonce,
     PauseAcknowledger(Address),
     PauseAcknowledgementHash(BytesN<32>),
     PauseAcknowledgementHistory(u32),
@@ -63,9 +81,11 @@ enum DataKey {
     DisputeFilingPolicy,
     SubjectNullifierDomain(u32),
     SubjectNullifierDomains,
-    UpgradePrecondition(BytesN<32>),
-    GovernanceReceipt(BytesN<32>),
-    LatestGovernanceReceipt,
+    EmergencyFastTrackPolicy,
+    EmergencyActionProposal(BytesN<32>),
+    EmergencyActionNonce,
+    /// Governed retention cap and prune watermark for one bounded history.
+    HistoryRetention(HistoryKind),
 }
 
 // ── admin transfer events ─────────────────────────────────────────────────────────
@@ -188,6 +208,17 @@ pub struct CommitmentAlgorithmPolicySet {
 pub struct ScopedPauseChanged {
     pub scope: PauseScope,
     pub paused: bool,
+}
+
+/// Emitted when governance changes the retention cap of a bounded history.
+#[contractevent]
+pub struct HistoryRetentionSet {
+    pub kind: HistoryKind,
+    pub previous_max_entries: u32,
+    pub max_entries: u32,
+    pub revision: u32,
+    pub oldest_retained: u32,
+    pub changed_by: Address,
 }
 
 #[contractevent]
@@ -733,6 +764,7 @@ impl ProtocolConfigContract {
                 TTL_EXTEND_TO_LEDGERS,
             );
         }
+        Self::prune_configured_history(&env, HistoryKind::PauseAcknowledgement, sequence + 1);
         Self::extend_instance_ttl(env.clone());
         PauseAcknowledged {
             record: record.clone(),
@@ -763,9 +795,16 @@ impl ProtocolConfigContract {
             .instance()
             .get(&DataKey::PauseAcknowledgementCount)
             .unwrap_or(0);
-        let end = cursor.saturating_add(limit).min(count);
+        // A cursor older than the retention window is clamped forward to the
+        // oldest retained acknowledgement instead of reading removed entries.
+        let start = cursor.max(Self::history_oldest_retained(
+            &env,
+            HistoryKind::PauseAcknowledgement,
+            count,
+        ));
+        let end = start.saturating_add(limit).min(count);
         let mut records = Vec::new(&env);
-        for sequence in cursor..end {
+        for sequence in start..end {
             if let Some(record) = env
                 .storage()
                 .persistent()
@@ -1974,13 +2013,7 @@ impl ProtocolConfigContract {
         let commitment = Self::commit(&env, proposal.action.clone());
         match proposal.action.clone() {
             CriticalAction::SchemaApproval(version) => {
-                Self::ensure_nonzero_version(version)?;
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::SchemaVersion(version), &true);
-                Self::record_schema_approval(&env, version);
-                Self::extend_schema_ttl(env.clone(), version);
-                Self::record_critical_action_change(
+                Self::apply_schema_activation(
                     env.clone(),
                     ConfigChangeCategory::SchemaApproval,
                     commitment.clone(),
@@ -2286,7 +2319,8 @@ impl ProtocolConfigContract {
 
     pub fn get_config_history(env: Env, cursor: u32, limit: u32) -> Vec<ConfigChangeSummary> {
         let total = Self::get_config_history_cursor(env.clone());
-        let oldest_available = total.saturating_sub(CONFIG_HISTORY_CAPACITY);
+        let oldest_available =
+            Self::history_oldest_retained(&env, HistoryKind::ConfigChange, total);
         let start = cursor.max(oldest_available);
         let capped_limit = limit.min(MAX_CONFIG_HISTORY_PAGE);
         let end = start.saturating_add(capped_limit).min(total);
@@ -2305,6 +2339,114 @@ impl ProtocolConfigContract {
             index += 1;
         }
         page
+    }
+
+    /// Admin-only: set the retention cap of one bounded history.
+    ///
+    /// `max_entries` must lie in the inclusive protocol range reported by
+    /// [`HistoryKind::min_retention`] and [`HistoryKind::max_retention`].
+    /// `expected_revision` must equal the revision returned by the last read of
+    /// `get_history_retention`; a mismatch means another update landed first and
+    /// is rejected with `InvalidState`, as is re-submitting the cap already in
+    /// force. Lowering a cap hides entries beyond the new window immediately and
+    /// removes at most `HISTORY_RETENTION_PRUNE_BATCH` of them in this call; the
+    /// rest are removed by later appends. Raising a cap never restores an entry
+    /// that was already removed. Cursors are absolute sequences and are never
+    /// renumbered; a cursor behind the window is clamped forward.
+    pub fn set_history_retention(
+        env: Env,
+        kind: HistoryKind,
+        max_entries: u32,
+        expected_revision: u32,
+    ) -> Result<HistoryRetention, ContractError> {
+        Self::ensure_not_decommissioned(&env)?;
+        let admin = Self::get_admin(env.clone())?;
+        Self::require_auth(&admin);
+        Self::ensure_critical_action_policy_disabled(&env)?;
+        if max_entries < kind.min_retention() || max_entries > kind.max_retention() {
+            return Err(ContractError::InvalidInput);
+        }
+        let mut state = Self::history_state(&env, kind);
+        if state.revision != expected_revision || state.max_entries == max_entries {
+            return Err(ContractError::InvalidState);
+        }
+        let previous_max_entries = state.max_entries;
+        let next_sequence = Self::history_next_sequence(&env, kind);
+        state.max_entries = max_entries;
+        state.revision = state
+            .revision
+            .checked_add(1)
+            .ok_or(ContractError::InvalidState)?;
+        Self::prune_history(&env, kind, &mut state, next_sequence);
+        Self::store_history_state(&env, kind, &state);
+        Self::bump_config_version(env.clone());
+        Self::append_config_history(
+            env.clone(),
+            ConfigChangeCategory::HistoryRetention,
+            Self::commit(&env, (kind, max_entries, state.revision)),
+        );
+        let view = Self::get_history_retention(env.clone(), kind);
+        HistoryRetentionSet {
+            kind,
+            previous_max_entries,
+            max_entries,
+            revision: state.revision,
+            oldest_retained: view.oldest_retained,
+            changed_by: admin,
+        }
+        .publish(&env);
+        Ok(view)
+    }
+
+    /// Returns the retention policy and current retained window of a history.
+    /// The retained window is the half-open sequence range
+    /// `[oldest_retained, next_sequence)`.
+    pub fn get_history_retention(env: Env, kind: HistoryKind) -> HistoryRetention {
+        let state = Self::history_state(&env, kind);
+        let next_sequence = Self::history_next_sequence(&env, kind);
+        HistoryRetention {
+            version: HISTORY_RETENTION_VERSION,
+            kind,
+            max_entries: state.max_entries,
+            min_allowed: kind.min_retention(),
+            max_allowed: kind.max_retention(),
+            revision: state.revision,
+            oldest_retained: oldest_retained_sequence(
+                next_sequence,
+                state.max_entries,
+                state.pruned_to,
+            ),
+            next_sequence,
+        }
+    }
+
+    /// Reports the contract's sequence range for an event domain. Sequences
+    /// are one-based and advance in the same transaction as the event, so a
+    /// failed transaction never advances them. Domains this contract does not
+    /// emit are rejected with `InvalidInput`.
+    pub fn get_event_sequence_range(
+        env: Env,
+        domain: EventDomain,
+    ) -> Result<EventSequenceRange, ContractError> {
+        let kind = match domain {
+            EventDomain::ConfigChange => HistoryKind::ConfigChange,
+            EventDomain::PauseAcknowledgement => HistoryKind::PauseAcknowledgement,
+            EventDomain::ConsentWithdrawal => return Err(ContractError::InvalidInput),
+        };
+        let view = Self::get_history_retention(env, kind);
+        let latest_emitted = u64::from(view.next_sequence);
+        let first_retained = if view.next_sequence == 0 {
+            0
+        } else {
+            u64::from(view.oldest_retained) + 1
+        };
+        Ok(EventSequenceRange {
+            version: EVENT_RANGE_VERSION,
+            domain,
+            first_retained,
+            latest_emitted,
+            checkpoint: event_checkpoint(latest_emitted),
+        })
     }
 
     /// Total number of change-history entries ever appended. Also the cursor
@@ -2593,6 +2735,90 @@ impl ProtocolConfigContract {
     /// once the ring is full. Only called from a success path, after the
     /// state it summarizes has already been committed, so a failed mutation
     /// never appends.
+    fn history_state(env: &Env, kind: HistoryKind) -> HistoryRetentionState {
+        env.storage()
+            .persistent()
+            .get(&DataKey::HistoryRetention(kind))
+            .unwrap_or(HistoryRetentionState {
+                max_entries: kind.default_retention(),
+                pruned_to: 0,
+                revision: 0,
+            })
+    }
+
+    fn store_history_state(env: &Env, kind: HistoryKind, state: &HistoryRetentionState) {
+        let key = DataKey::HistoryRetention(kind);
+        env.storage().persistent().set(&key, state);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_TO_LEDGERS);
+    }
+
+    fn history_next_sequence(env: &Env, kind: HistoryKind) -> u32 {
+        let key = match kind {
+            HistoryKind::ConfigChange => DataKey::ConfigHistoryTotal,
+            HistoryKind::PauseAcknowledgement => DataKey::PauseAcknowledgementCount,
+        };
+        env.storage().instance().get(&key).unwrap_or(0)
+    }
+
+    fn history_oldest_retained(env: &Env, kind: HistoryKind, next_sequence: u32) -> u32 {
+        let state = Self::history_state(env, kind);
+        oldest_retained_sequence(next_sequence, state.max_entries, state.pruned_to)
+    }
+
+    /// Removes up to `HISTORY_RETENTION_PRUNE_BATCH` entries that fell out of
+    /// the retention window and advances the prune watermark past them. The
+    /// config-change ring is physically bounded by its capacity, so entries the
+    /// ring already overwrote are skipped rather than removed twice.
+    fn prune_history(
+        env: &Env,
+        kind: HistoryKind,
+        state: &mut HistoryRetentionState,
+        next_sequence: u32,
+    ) {
+        let window_start = next_sequence.saturating_sub(state.max_entries);
+        let mut index = match kind {
+            HistoryKind::ConfigChange => state
+                .pruned_to
+                .max(next_sequence.saturating_sub(CONFIG_HISTORY_CAPACITY)),
+            HistoryKind::PauseAcknowledgement => state.pruned_to,
+        };
+        let mut removed = 0;
+        while index < window_start && removed < HISTORY_RETENTION_PRUNE_BATCH {
+            match kind {
+                HistoryKind::ConfigChange => env
+                    .storage()
+                    .persistent()
+                    .remove(&DataKey::ConfigHistoryRing(index % CONFIG_HISTORY_CAPACITY)),
+                HistoryKind::PauseAcknowledgement => env
+                    .storage()
+                    .persistent()
+                    .remove(&DataKey::PauseAcknowledgementHistory(index)),
+            }
+            index += 1;
+            removed += 1;
+        }
+        state.pruned_to = state.pruned_to.max(index);
+    }
+
+    /// Applies a configured cap after an append. Histories whose cap was never
+    /// configured keep their pre-retention behavior and cost nothing extra.
+    fn prune_configured_history(env: &Env, kind: HistoryKind, next_sequence: u32) {
+        let key = DataKey::HistoryRetention(kind);
+        if let Some(mut state) = env
+            .storage()
+            .persistent()
+            .get::<_, HistoryRetentionState>(&key)
+        {
+            let before = state.pruned_to;
+            Self::prune_history(env, kind, &mut state, next_sequence);
+            if state.pruned_to != before {
+                Self::store_history_state(env, kind, &state);
+            }
+        }
+    }
+
     fn append_config_history(
         env: Env,
         category: ConfigChangeCategory,
@@ -2621,6 +2847,7 @@ impl ProtocolConfigContract {
         env.storage()
             .instance()
             .set(&DataKey::ConfigHistoryTotal, &next_total);
+        Self::prune_configured_history(&env, HistoryKind::ConfigChange, next_total);
         Self::extend_instance_ttl(env);
     }
 
@@ -3303,7 +3530,14 @@ mod test {
     extern crate std;
 
     use super::{DataKey, ProtocolConfigContract, ProtocolConfigContractClient};
-    use earnproof_shared::*;
+    use earnproof_shared::{
+        AdminTransferState, ConfigChangeCategory, ContractError, CriticalAction,
+        CriticalActionPolicy, DisputeFilingAnchor, DisputeFilingPolicy, EmergencyAction,
+        EmergencyFastTrackPolicy, GovernanceApprovalEligibility, PauseScope, SchemaRateLimit,
+        ADMIN_TRANSFER_EXPIRY_LEDGERS, CRITICAL_ACTION_APPROVAL_EXPIRY_LEDGERS,
+        DISPUTE_FILING_POLICY_VERSION, GOVERNANCE_ACTION_HASH_VERSION,
+        SCHEMA_POLICY_DIGEST_VERSION, TTL_THRESHOLD_LEDGERS,
+    };
     use soroban_sdk::{
         testutils::{storage::Persistent as _, Address as _, Ledger as _},
         Address, BytesN, Env, Vec,
